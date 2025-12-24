@@ -141,7 +141,9 @@ struct KucoinSpotSymbolInfo {
     enable_trading: bool,
 }
 
-async fn fetch_spot_symbol_set(rest_endpoint: &str) -> anyhow::Result<std::collections::HashSet<String>> {
+async fn fetch_spot_symbol_set(
+    rest_endpoint: &str,
+) -> anyhow::Result<std::collections::HashSet<String>> {
     let base = rest_endpoint.trim_end_matches('/');
     let url = format!("{base}/api/v1/symbols");
     let client = reqwest::Client::new();
@@ -152,7 +154,8 @@ async fn fetch_spot_symbol_set(rest_endpoint: &str) -> anyhow::Result<std::colle
         .context("kucoin symbols request")?
         .error_for_status()
         .context("kucoin symbols status")?;
-    let body: KucoinResp<Vec<KucoinSpotSymbolInfo>> = resp.json().await.context("kucoin symbols json")?;
+    let body: KucoinResp<Vec<KucoinSpotSymbolInfo>> =
+        resp.json().await.context("kucoin symbols json")?;
     let mut out = std::collections::HashSet::new();
     for s in body.data {
         if s.enable_trading {

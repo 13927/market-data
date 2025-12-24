@@ -440,6 +440,7 @@ fn default_output_dir() -> String {
 pub enum OutputFormat {
     Parquet,
     Jsonl,
+    Csv,
 }
 
 fn default_output_format() -> OutputFormat {

@@ -84,9 +84,11 @@ fn canonical_to_contract_candidates(symbol: &str) -> Option<Vec<String>> {
     // Canonical stored symbols are like BTCUSDT (no dash). We also accept BTC-USDT.
     let upper = symbol.trim().to_ascii_uppercase().replace('-', "");
     let quotes = ["USDT", "USDC", "USD"];
-    let (base, quote) = quotes
-        .iter()
-        .find_map(|q| upper.strip_suffix(q).map(|b| (b.to_string(), q.to_string())))?;
+    let (base, quote) = quotes.iter().find_map(|q| {
+        upper
+            .strip_suffix(q)
+            .map(|b| (b.to_string(), q.to_string()))
+    })?;
     if base.is_empty() {
         return None;
     }
@@ -101,7 +103,12 @@ fn canonical_to_contract_candidates(symbol: &str) -> Option<Vec<String>> {
         _ => vec![quote],
     };
 
-    Some(quote_order.into_iter().map(|q| format!("{base}{q}M")).collect())
+    Some(
+        quote_order
+            .into_iter()
+            .map(|q| format!("{base}{q}M"))
+            .collect(),
+    )
 }
 
 fn jittered_sleep_secs(base_secs: u64) -> Duration {
@@ -209,8 +216,7 @@ pub fn spawn_kucoin_futures_public_ws(
             }
             let mut backoff_secs = 1u64;
             loop {
-                let res =
-                    run_kucoin_futures_ws_once(&cfg, pacer.as_deref(), &chunk, &sender).await;
+                let res = run_kucoin_futures_ws_once(&cfg, pacer.as_deref(), &chunk, &sender).await;
                 if let Err(err) = &res {
                     warn!("kucoin_futures ws ended: {err:#} backoff_secs={backoff_secs}");
                 }

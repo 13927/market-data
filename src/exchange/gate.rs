@@ -175,11 +175,7 @@ async fn fetch_gate_futures_contracts(
         resp.json().await.context("gate futures contracts json")?;
     let mut out = std::collections::HashSet::new();
     for c in contracts {
-        if let Some(name) = c
-            .name
-            .or(c.contract)
-            .or(c.id)
-        {
+        if let Some(name) = c.name.or(c.contract).or(c.id) {
             out.insert(name.to_ascii_uppercase());
         }
     }

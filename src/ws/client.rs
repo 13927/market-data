@@ -9,9 +9,9 @@ use url::Url;
 
 use super::WsFrame;
 
-const WS_CONNECT_TIMEOUT_SECS: u64 = 10;
+const WS_CONNECT_TIMEOUT_SECS: u64 = 15;
 const WS_ACTIVE_PING_EVERY_SECS: u64 = 15;
-const WS_IDLE_DEAD_SECS: u64 = 60;
+const WS_IDLE_DEAD_SECS: u64 = 90;
 const WS_WATCHDOG_TICK_SECS: u64 = 1;
 
 #[derive(Debug, Clone, Copy)]
@@ -90,7 +90,14 @@ where
                             .context("send pong")?;
                     }
                     Message::Pong(_) => {}
-                    Message::Close(_) => break,
+                    Message::Close(c) => {
+                        if let Some(cf) = c {
+                            tracing::warn!("ws closed by server: code={} reason={}", cf.code, cf.reason);
+                        } else {
+                            tracing::warn!("ws closed by server: (no info)");
+                        }
+                        break;
+                    }
                     Message::Frame(_) => {}
                 }
             }

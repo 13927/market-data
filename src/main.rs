@@ -21,7 +21,11 @@ fn validate_config_for_scale(cfg: &config::Config) -> anyhow::Result<()> {
         s.trim().to_ascii_uppercase()
     }
 
-    fn add_symbols(map: &mut HashMap<&'static str, HashSet<String>>, ex: &'static str, syms: &[String]) {
+    fn add_symbols(
+        map: &mut HashMap<&'static str, HashSet<String>>,
+        ex: &'static str,
+        syms: &[String],
+    ) {
         if syms.is_empty() {
             return;
         }
@@ -64,7 +68,11 @@ fn validate_config_for_scale(cfg: &config::Config) -> anyhow::Result<()> {
         add_symbols(&mut per_exchange, "binance", &cfg.binance_spot_json.symbols);
     }
     if cfg.binance_futures_json.enabled {
-        add_symbols(&mut per_exchange, "binance", &cfg.binance_futures_json.symbols);
+        add_symbols(
+            &mut per_exchange,
+            "binance",
+            &cfg.binance_futures_json.symbols,
+        );
     }
     if cfg.kucoin.enabled || cfg.kucoin_futures.enabled {
         add_symbols(&mut per_exchange, "kucoin", &cfg.kucoin.symbols);
@@ -459,10 +467,13 @@ async fn main() -> anyhow::Result<()> {
     let kucoin_pacer = kucoin_global_ms
         .checked_add(0)
         .filter(|ms| *ms > 0)
-        .map(|ms| std::sync::Arc::new(util::pacer::Pacer::new(std::time::Duration::from_millis(ms))));
+        .map(|ms| {
+            std::sync::Arc::new(util::pacer::Pacer::new(std::time::Duration::from_millis(
+                ms,
+            )))
+        });
 
     if cfg.kucoin.enabled {
-
         match exchange::kucoin::spawn_kucoin_public_ws(
             cfg.kucoin.clone(),
             kucoin_pacer.clone(),
@@ -617,6 +628,38 @@ async fn main() -> anyhow::Result<()> {
             }
             info!("writer exited; open_files={}", w.open_file_count());
         }
+        config::OutputFormat::Csv => {
+            let mut w = writer::csv::CsvFileWriter::new(
+                output_dir,
+                bucket_minutes,
+                retention_hours,
+                cleanup_interval_secs,
+            )
+            .expect("init csv writer");
+            let tick = crossbeam_channel::tick(std::time::Duration::from_secs(5));
+            loop {
+                crossbeam_channel::select! {
+                    recv(event_rx) -> msg => match msg {
+                        Ok(ev) => {
+                            if let Err(err) = w.write_event(&ev) {
+                                warn!("write_event failed: {err:#}");
+                            }
+                        }
+                        Err(_) => break,
+                    },
+                    recv(tick) -> _ => {
+                        let queue_len = event_rx.len();
+                        if let Err(err) = w.maintenance_tick(queue_len) {
+                            warn!("writer maintenance failed: {err:#}");
+                        }
+                    }
+                }
+            }
+            if let Err(err) = w.close_all() {
+                warn!("final close failed: {err:#}");
+            }
+            info!("writer exited; open_files={}", w.open_file_count());
+        }
     });
 
     wait_for_shutdown().await?;
@@ -645,14 +688,14 @@ fn spawn_binance_json(
                     ws::WsFrame::Text(t) => t,
                     ws::WsFrame::Binary(_) => return Ok(()),
                 };
-                    match exchange::binance_json::parse_event(kind, &symbol, &text) {
-                        Ok(Some(ev)) => {
+                match exchange::binance_json::parse_event(kind, &symbol, &text) {
+                    Ok(Some(ev)) => {
                         if sender.try_send(ev).is_err() {
                             crate::util::metrics::inc_dropped_events(1);
                         }
-                        }
-                        Ok(None) => {}
-                        Err(err) => warn!("parse binance json failed ({url}): {err:#}"),
+                    }
+                    Ok(None) => {}
+                    Err(err) => warn!("parse binance json failed ({url}): {err:#}"),
                 }
                 Ok(())
             })

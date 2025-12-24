@@ -234,7 +234,12 @@ async fn fetch_kucoin_futures_contracts(rest_endpoint: &str) -> anyhow::Result<H
     Ok(resp
         .data
         .into_iter()
-        .filter(|c| c.status.as_deref().unwrap_or("Open").eq_ignore_ascii_case("Open"))
+        .filter(|c| {
+            c.status
+                .as_deref()
+                .unwrap_or("Open")
+                .eq_ignore_ascii_case("Open")
+        })
         .map(|c| c.symbol.to_ascii_uppercase())
         .collect())
 }
@@ -265,7 +270,11 @@ async fn fetch_gate_futures_contracts(settle: &str) -> anyhow::Result<HashSet<St
     let settle = settle.trim().to_ascii_lowercase();
     let url = format!("https://api.gateio.ws/api/v4/futures/{settle}/contracts");
     let client = reqwest::Client::new();
-    let resp = client.get(&url).send().await.context("gate futures request")?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("gate futures request")?;
     if resp.status().as_u16() == 400 && settle == "usdc" {
         // Gate may not support USDC-margined futures on this endpoint. Treat it as "no contracts".
         eprintln!("WARN: gate futures usdc contracts endpoint returned 400; treating as empty");
@@ -398,7 +407,11 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     if !parse_fail.is_empty() {
-        eprintln!("WARN: cannot parse {} symbols (expected ...USDT/...USDC): {:?}", parse_fail.len(), parse_fail);
+        eprintln!(
+            "WARN: cannot parse {} symbols (expected ...USDT/...USDC): {:?}",
+            parse_fail.len(),
+            parse_fail
+        );
     }
 
     // Fetch all exchange listings in parallel.
@@ -452,15 +465,12 @@ async fn main() -> anyhow::Result<()> {
     println!();
     println!(
         "{:12} | {:14} | {:14} | {:16} | {:16} | {:16} | {:20}",
-        "BASE",
-        "bin_spot",
-        "bin_fut",
-        "kucoin_spot",
-        "kucoin_fut",
-        "gate_spot",
-        "gate_fut(settle)"
+        "BASE", "bin_spot", "bin_fut", "kucoin_spot", "kucoin_fut", "gate_spot", "gate_fut(settle)"
     );
-    println!("{}", "-".repeat(12 + 3 + 14 + 3 + 14 + 3 + 16 + 3 + 16 + 3 + 16 + 3 + 20));
+    println!(
+        "{}",
+        "-".repeat(12 + 3 + 14 + 3 + 14 + 3 + 16 + 3 + 16 + 3 + 16 + 3 + 20)
+    );
 
     for (_raw, cs) in &canonical {
         let base = cs.base.to_string();
@@ -600,7 +610,13 @@ async fn main() -> anyhow::Result<()> {
     let mut need_alias: Vec<String> = per_base_missing
         .iter()
         .filter_map(|(base, m)| {
-            if m.kucoin_spot || m.kucoin_fut || m.gate_spot || m.gate_fut || m.binance_spot || m.binance_fut {
+            if m.kucoin_spot
+                || m.kucoin_fut
+                || m.gate_spot
+                || m.gate_fut
+                || m.binance_spot
+                || m.binance_fut
+            {
                 Some(base.clone())
             } else {
                 None
@@ -625,7 +641,10 @@ async fn main() -> anyhow::Result<()> {
         if m.gate_fut {
             let sug = suggest_gate_futures_contracts(&g_usdt, &g_usdc, &base, "USDT");
             if !sug.is_empty() {
-                let rendered: Vec<String> = sug.into_iter().map(|(s, settle)| format!("{s}({settle})")).collect();
+                let rendered: Vec<String> = sug
+                    .into_iter()
+                    .map(|(s, settle)| format!("{s}({settle})"))
+                    .collect();
                 println!("gate_fut   {base}: {}", rendered.join(", "));
                 any = true;
             }

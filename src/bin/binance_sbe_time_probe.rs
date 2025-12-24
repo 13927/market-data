@@ -325,8 +325,6 @@ async fn main() -> anyhow::Result<()> {
     })
     .await;
 
-    eprintln!(
-        "done: got_best_bid_ask={got_bba} got_depth20={got_depth} got_trade={got_trade}"
-    );
+    eprintln!("done: got_best_bid_ask={got_bba} got_depth20={got_depth} got_trade={got_trade}");
     Ok(())
 }

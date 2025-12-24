@@ -18,7 +18,9 @@ fn parse_args() -> anyhow::Result<(String, usize)> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--max" => {
-                let v = it.next().ok_or_else(|| anyhow::anyhow!("--max needs value"))?;
+                let v = it
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--max needs value"))?;
                 max = v.parse::<usize>().context("parse --max")?;
             }
             _ => return Err(anyhow::anyhow!("unknown arg: {arg}")),
@@ -276,7 +278,12 @@ async fn fetch_kucoin_futures_contracts(rest_endpoint: &str) -> anyhow::Result<H
     Ok(resp
         .data
         .into_iter()
-        .filter(|c| c.status.as_deref().unwrap_or("Open").eq_ignore_ascii_case("Open"))
+        .filter(|c| {
+            c.status
+                .as_deref()
+                .unwrap_or("Open")
+                .eq_ignore_ascii_case("Open")
+        })
         .map(|c| c.symbol.to_ascii_uppercase())
         .collect())
 }
@@ -307,7 +314,11 @@ async fn fetch_gate_futures_contracts(settle: &str) -> anyhow::Result<HashSet<St
     let settle = settle.trim().to_ascii_lowercase();
     let url = format!("https://api.gateio.ws/api/v4/futures/{settle}/contracts");
     let client = reqwest::Client::new();
-    let resp = client.get(&url).send().await.context("gate futures request")?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("gate futures request")?;
     if resp.status().as_u16() == 400 && settle == "usdc" {
         eprintln!("WARN: gate futures usdc contracts endpoint returned 400; treating as empty");
         return Ok(HashSet::new());
@@ -435,7 +446,10 @@ async fn main() -> anyhow::Result<()> {
         "gate_spot",
         "gate_fut"
     );
-    println!("{}", "-".repeat(14 + 1 + 10 + 3 + 13 + 1 + 13 + 1 + 15 + 1 + 15 + 1 + 13 + 1 + 15));
+    println!(
+        "{}",
+        "-".repeat(14 + 1 + 10 + 3 + 13 + 1 + 13 + 1 + 15 + 1 + 15 + 1 + 13 + 1 + 15)
+    );
 
     let venues = [
         "bin_spot",
@@ -460,7 +474,17 @@ async fn main() -> anyhow::Result<()> {
             Some(cs) => cs,
             None => {
                 totals.parse_fail += 1;
-                println!("{:14} {:10} | {:13} {:13} {:15} {:15} {:13} {:15}", raw_u, "-", "PARSE_FAIL", "PARSE_FAIL", "PARSE_FAIL", "PARSE_FAIL", "PARSE_FAIL", "PARSE_FAIL");
+                println!(
+                    "{:14} {:10} | {:13} {:13} {:15} {:15} {:13} {:15}",
+                    raw_u,
+                    "-",
+                    "PARSE_FAIL",
+                    "PARSE_FAIL",
+                    "PARSE_FAIL",
+                    "PARSE_FAIL",
+                    "PARSE_FAIL",
+                    "PARSE_FAIL"
+                );
                 continue;
             }
         };
@@ -486,12 +510,8 @@ async fn main() -> anyhow::Result<()> {
             missing_any = true;
             bump(&mut totals.missing_by_venue, "bin_spot", 1);
             push(&mut totals.missing_symbols, "bin_spot", raw_u.clone());
-            let cands = candidates_filtered(
-                &bin_spot,
-                &keyword,
-                &suffixes_for_binance(&cs.quote),
-                max,
-            );
+            let cands =
+                candidates_filtered(&bin_spot, &keyword, &suffixes_for_binance(&cs.quote), max);
             if cands.is_empty() {
                 bump(&mut totals.no_candidate_by_venue, "bin_spot", 1);
                 status.insert("bin_spot", "MISS(0)".to_string());
@@ -532,12 +552,8 @@ async fn main() -> anyhow::Result<()> {
             missing_any = true;
             bump(&mut totals.missing_by_venue, "kucoin_spot", 1);
             push(&mut totals.missing_symbols, "kucoin_spot", raw_u.clone());
-            let cands = candidates_filtered(
-                &k_spot,
-                &keyword,
-                &suffixes_for_kucoin_spot(&cs.quote),
-                max,
-            );
+            let cands =
+                candidates_filtered(&k_spot, &keyword, &suffixes_for_kucoin_spot(&cs.quote), max);
             if cands.is_empty() {
                 bump(&mut totals.no_candidate_by_venue, "kucoin_spot", 1);
                 status.insert("kucoin_spot", "MISS(0)".to_string());
@@ -577,8 +593,7 @@ async fn main() -> anyhow::Result<()> {
             missing_any = true;
             bump(&mut totals.missing_by_venue, "gate_spot", 1);
             push(&mut totals.missing_symbols, "gate_spot", raw_u.clone());
-            let cands =
-                candidates_filtered(&g_spot, &keyword, &suffixes_for_gate(&cs.quote), max);
+            let cands = candidates_filtered(&g_spot, &keyword, &suffixes_for_gate(&cs.quote), max);
             if cands.is_empty() {
                 bump(&mut totals.no_candidate_by_venue, "gate_spot", 1);
                 status.insert("gate_spot", "MISS(0)".to_string());
@@ -684,4 +699,3 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-

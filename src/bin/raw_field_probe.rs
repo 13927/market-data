@@ -53,9 +53,11 @@ fn canonical_to_kucoin_futures_contract(symbol: &str) -> Option<String> {
     // KuCoin futures contracts like XBTUSDTM (BTC perpetual).
     let upper = symbol.trim().to_ascii_uppercase().replace('-', "");
     let quotes = ["USDT", "USDC", "USD"];
-    let (base, quote) = quotes
-        .iter()
-        .find_map(|q| upper.strip_suffix(q).map(|b| (b.to_string(), q.to_string())))?;
+    let (base, quote) = quotes.iter().find_map(|q| {
+        upper
+            .strip_suffix(q)
+            .map(|b| (b.to_string(), q.to_string()))
+    })?;
     let base = match base.as_str() {
         "BTC" => "XBT".to_string(),
         _ => base,
@@ -64,7 +66,11 @@ fn canonical_to_kucoin_futures_contract(symbol: &str) -> Option<String> {
 }
 
 fn canonical_to_gate_symbol(symbol: &str) -> String {
-    let upper = symbol.trim().to_ascii_uppercase().replace('-', "").replace('_', "");
+    let upper = symbol
+        .trim()
+        .to_ascii_uppercase()
+        .replace('-', "")
+        .replace('_', "");
     let quotes = ["USDT", "USDC", "BTC", "ETH", "BNB", "DAI", "FDUSD", "USD"];
     if let Some(q) = quotes.iter().find(|q| upper.ends_with(*q)) {
         let base = &upper[..upper.len() - q.len()];
@@ -140,7 +146,9 @@ async fn probe_kucoin_spot(rest_base: &str, canonical_symbol: &str) -> anyhow::R
     let want_l5 = format!("/spotMarket/level2Depth5:{topic_symbol}");
 
     let url = kucoin_ws_url(&endpoint, &token);
-    let (ws, _) = tokio_tungstenite::connect_async(url).await.context("kucoin spot connect")?;
+    let (ws, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .context("kucoin spot connect")?;
     let (mut write, mut read) = ws.split();
 
     for (i, topic) in [want_ticker.as_str(), want_l5.as_str()].iter().enumerate() {
@@ -180,7 +188,16 @@ async fn probe_kucoin_spot(rest_base: &str, canonical_symbol: &str) -> anyhow::R
         }
         let topic = v.get("topic").and_then(|x| x.as_str()).unwrap_or("");
         let data = v.get("data").cloned().unwrap_or(Value::Null);
-        let fields = ["sequence", "sequenceStart", "sequenceEnd", "ts", "time", "timestamp", "u", "id"];
+        let fields = [
+            "sequence",
+            "sequenceStart",
+            "sequenceEnd",
+            "ts",
+            "time",
+            "timestamp",
+            "u",
+            "id",
+        ];
         if topic.eq_ignore_ascii_case(&want_ticker) && got_ticker.is_none() {
             let mut meta = BTreeMap::new();
             meta.insert("topic", topic.to_string());
@@ -226,7 +243,9 @@ async fn probe_kucoin_futures(
     let want_ticker = format!("/contractMarket/tickerV2:{contract}");
     let want_l5 = format!("/contractMarket/level2Depth5:{contract}");
     let url = kucoin_ws_url(&endpoint, &token);
-    let (ws, _) = tokio_tungstenite::connect_async(url).await.context("kucoin futures connect")?;
+    let (ws, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .context("kucoin futures connect")?;
     let (mut write, mut read) = ws.split();
 
     for (i, topic) in [want_ticker.as_str(), want_l5.as_str()].iter().enumerate() {
@@ -266,7 +285,16 @@ async fn probe_kucoin_futures(
         }
         let topic = v.get("topic").and_then(|x| x.as_str()).unwrap_or("");
         let data = v.get("data").cloned().unwrap_or(Value::Null);
-        let fields = ["sequence", "sequenceStart", "sequenceEnd", "ts", "time", "timestamp", "u", "id"];
+        let fields = [
+            "sequence",
+            "sequenceStart",
+            "sequenceEnd",
+            "ts",
+            "time",
+            "timestamp",
+            "u",
+            "id",
+        ];
         if topic.eq_ignore_ascii_case(&want_ticker) && got_ticker.is_none() {
             let mut meta = BTreeMap::new();
             meta.insert("topic", topic.to_string());
@@ -307,7 +335,9 @@ async fn probe_gate(
     canonical_symbol: &str,
 ) -> anyhow::Result<Vec<Sample>> {
     let sym = canonical_to_gate_symbol(canonical_symbol);
-    let (ws, _) = tokio_tungstenite::connect_async(ws_url).await.context("gate connect")?;
+    let (ws, _) = tokio_tungstenite::connect_async(ws_url)
+        .await
+        .context("gate connect")?;
     let (write, mut read) = ws.split();
     let write = std::sync::Arc::new(tokio::sync::Mutex::new(write));
 
@@ -321,7 +351,11 @@ async fn probe_gate(
     } else {
         ("spot.book_ticker", "spot.order_book")
     };
-    let (l5_interval, l5_intv_label) = if is_futures { ("0.1", "0.1") } else { ("100ms", "100ms") };
+    let (l5_interval, l5_intv_label) = if is_futures {
+        ("0.1", "0.1")
+    } else {
+        ("100ms", "100ms")
+    };
 
     let sub_ticker = serde_json::json!({
         "time": now_sec,
@@ -397,7 +431,11 @@ async fn probe_gate(
                     meta.insert("channel", channel.to_string());
                     meta.insert("l5_interval", l5_intv_label.to_string());
                     got_ticker = Some(Sample {
-                        name: if is_futures { "gate_swap_ticker" } else { "gate_spot_ticker" },
+                        name: if is_futures {
+                            "gate_swap_ticker"
+                        } else {
+                            "gate_spot_ticker"
+                        },
                         meta,
                         candidate_fields: pick_fields(&result, &fields),
                         raw: result,
@@ -407,7 +445,11 @@ async fn probe_gate(
                     meta.insert("channel", channel.to_string());
                     meta.insert("l5_interval", l5_intv_label.to_string());
                     got_l5 = Some(Sample {
-                        name: if is_futures { "gate_swap_l5" } else { "gate_spot_l5" },
+                        name: if is_futures {
+                            "gate_swap_l5"
+                        } else {
+                            "gate_spot_l5"
+                        },
                         meta,
                         candidate_fields: pick_fields(&result, &fields),
                         raw: result,
@@ -466,7 +508,9 @@ fn parse_args() -> (String, String, String, String, String) {
         match a.as_str() {
             "--symbol" => symbol = args.next().unwrap_or(symbol),
             "--kucoin-rest" => kucoin_rest = args.next().unwrap_or(kucoin_rest),
-            "--kucoin-futures-rest" => kucoin_futures_rest = args.next().unwrap_or(kucoin_futures_rest),
+            "--kucoin-futures-rest" => {
+                kucoin_futures_rest = args.next().unwrap_or(kucoin_futures_rest)
+            }
             "--gate-spot-ws" => gate_spot_ws = args.next().unwrap_or(gate_spot_ws),
             "--gate-futures-ws" => gate_futures_ws = args.next().unwrap_or(gate_futures_ws),
             "--help" | "-h" => {
@@ -484,7 +528,13 @@ fn parse_args() -> (String, String, String, String, String) {
         }
     }
 
-    (symbol, kucoin_rest, kucoin_futures_rest, gate_spot_ws, gate_futures_ws)
+    (
+        symbol,
+        kucoin_rest,
+        kucoin_futures_rest,
+        gate_spot_ws,
+        gate_futures_ws,
+    )
 }
 
 #[tokio::main]

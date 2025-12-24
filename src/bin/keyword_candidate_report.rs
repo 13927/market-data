@@ -20,10 +20,15 @@ fn parse_args() -> anyhow::Result<(String, String, Option<String>, usize)> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--keyword" => {
-                keyword = Some(it.next().ok_or_else(|| anyhow::anyhow!("--keyword needs value"))?)
+                keyword = Some(
+                    it.next()
+                        .ok_or_else(|| anyhow::anyhow!("--keyword needs value"))?,
+                )
             }
             "--max" => {
-                let v = it.next().ok_or_else(|| anyhow::anyhow!("--max needs value"))?;
+                let v = it
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--max needs value"))?;
                 max = v.parse::<usize>().context("parse --max")?;
             }
             _ => return Err(anyhow::anyhow!("unknown arg: {arg}")),
@@ -140,7 +145,12 @@ async fn fetch_kucoin_futures_contracts(rest_endpoint: &str) -> anyhow::Result<V
     Ok(resp
         .data
         .into_iter()
-        .filter(|c| c.status.as_deref().unwrap_or("Open").eq_ignore_ascii_case("Open"))
+        .filter(|c| {
+            c.status
+                .as_deref()
+                .unwrap_or("Open")
+                .eq_ignore_ascii_case("Open")
+        })
         .map(|c| c.symbol.to_ascii_uppercase())
         .collect())
 }
@@ -171,7 +181,11 @@ async fn fetch_gate_futures_contracts(settle: &str) -> anyhow::Result<Vec<String
     let settle = settle.trim().to_ascii_lowercase();
     let url = format!("https://api.gateio.ws/api/v4/futures/{settle}/contracts");
     let client = reqwest::Client::new();
-    let resp = client.get(&url).send().await.context("gate futures request")?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .context("gate futures request")?;
     if resp.status().as_u16() == 400 && settle == "usdc" {
         eprintln!("WARN: gate futures usdc contracts endpoint returned 400; treating as empty");
         return Ok(vec![]);

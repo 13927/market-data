@@ -1,32 +1,5 @@
 use anyhow::Context;
 
-pub fn sbe_connect_url(endpoint: &str, streams: &[String]) -> anyhow::Result<String> {
-    // More compatible strategy:
-    // - Always connect via `/ws/<firstStream>`
-    // - If more streams are needed, send a JSON SUBSCRIBE control message after connect
-    // This avoids relying on `/stream?streams=...` which may return 400 in some deployments.
-    let endpoint = endpoint.trim_end_matches('/');
-    let first = streams
-        .first()
-        .context("binance_spot_sbe.streams is empty")?;
-    Ok(format!("{endpoint}/ws/{first}"))
-}
-
-pub fn sbe_subscribe_msg(streams: &[String]) -> Option<String> {
-    if streams.len() <= 1 {
-        return None;
-    }
-    let params: Vec<&str> = streams.iter().skip(1).map(|s| s.as_str()).collect();
-    Some(
-        serde_json::json!({
-            "id": 1,
-            "method": "SUBSCRIBE",
-            "params": params
-        })
-        .to_string(),
-    )
-}
-
 pub fn required_headers(api_key: &str) -> anyhow::Result<Vec<(&'static str, String)>> {
     let api_key = api_key.trim().to_string();
     if api_key.is_empty() {

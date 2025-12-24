@@ -35,4 +35,3 @@ impl Pacer {
         sleep_until(deadline).await;
     }
 }
-

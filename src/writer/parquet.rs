@@ -204,8 +204,13 @@ impl ParquetFileWriter {
                 Entry::Vacant(e) => {
                     let symbol_dir = exchange_symbol_dir(&self.dir, &key.exchange, &key.symbol)
                         .context("create exchange/symbol dir")?;
-                    let (final_path, inprogress_path, file) =
-                        open_new_inprogress_file(&symbol_dir, &key.exchange, &key.symbol, &time_part, "parquet")?;
+                    let (final_path, inprogress_path, file) = open_new_inprogress_file(
+                        &symbol_dir,
+                        &key.exchange,
+                        &key.symbol,
+                        &time_part,
+                        "parquet",
+                    )?;
                     info!(
                         "open parquet: exchange={} symbol={} bucket={} file={}",
                         key.exchange,
@@ -789,9 +794,8 @@ fn open_new_inprogress_file(
             Ok(file) => return Ok((final_path, inprogress_path, file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
-                return Err(e).with_context(|| {
-                    format!("open output file {}", inprogress_path.display())
-                });
+                return Err(e)
+                    .with_context(|| format!("open output file {}", inprogress_path.display()));
             }
         }
     }
@@ -923,11 +927,11 @@ fn looks_like_complete_parquet(path: &Path) -> anyhow::Result<bool> {
 }
 
 fn unique_path_with_tag(path: &Path, tag: &str) -> anyhow::Result<PathBuf> {
-    let dir = path
-        .parent()
-        .context("path has no parent")?
-        .to_path_buf();
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("parquet");
+    let dir = path.parent().context("path has no parent")?.to_path_buf();
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("parquet");
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
     let now_ms = time_now_ms();
     for i in 0..=10_000u32 {
