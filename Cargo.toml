@@ -1,0 +1,37 @@
+[package]
+name = "market-data"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+
+# WebSocket
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"] }
+tungstenite = "0.21"
+futures-util = "0.3"
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# JSON
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Time
+chrono = "0.4"
+
+# Parquet & Arrow
+arrow = { version = "53", features = ["prettyprint"] }
+parquet = { version = "53", features = ["zstd"] }
+
+# Compression
+zstd = "0.13"
+
+# Concurrency
+crossbeam-channel = "0.5"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

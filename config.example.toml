@@ -1,0 +1,78 @@
+# Local config for market-data
+#
+# Note: Binance Spot SBE Market Data Streams require `X-MBX-APIKEY` (Ed25519 API key).
+# Keep secrets out of git; copy this file to `config.toml` and fill api_key.
+
+[binance_spot_sbe]
+enabled = false
+api_key = "PUT_YOUR_ED25519_API_KEY_HERE"
+endpoint = "wss://stream-sbe.binance.com:9443"
+# A starter set of liquid majors. Increase as needed.
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT"]
+best_bid_ask = true
+depth20 = true
+trade = false
+streams = [] # if non-empty, use explicit stream names (lowercase)
+
+[binance_spot_json]
+enabled = false
+endpoint = "wss://stream.binance.com:9443"
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT"]
+combined = true
+book = true
+l5 = true
+trade = false
+
+[binance_futures_json]
+enabled = false
+endpoint = "wss://fstream.binance.com"
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT"]
+combined = true
+book = true
+l5 = true
+trade = false
+
+[kucoin]
+enabled = false
+rest_endpoint = "https://api.kucoin.com"
+#
+# KuCoin has strict control-message limits for subscribe/ping/pong.
+# These pacing knobs prevent `code=509 exceed max permits per second` when you subscribe many topics.
+subscribe_delay_ms = 100        # per-connection subscribe interval (used only when global_subscribe_delay_ms=0)
+conn_stagger_ms = 500           # stagger each WS connection start
+global_subscribe_delay_ms = 100 # global subscribe interval shared across spot+swap (recommended)
+swap = true
+futures_rest_endpoint = "https://api-futures.kucoin.com"
+# Accepts either "BTC-USDT" or "BTCUSDT" (auto-normalized).
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT"]
+ticker = true
+l5 = true
+
+[gate]
+enabled = false
+spot_endpoint = "wss://api.gateio.ws/ws/v4/"
+futures_endpoint = "wss://fx-ws.gateio.ws/v4/ws/usdt"
+# Accepts "BTC_USDT" or "BTCUSDT" (auto-normalized).
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT"]
+spot_ticker = true
+spot_l5 = true
+swap_ticker = true
+swap_l5 = true
+
+[output]
+dir = "data"
+format = "parquet" # parquet | jsonl
+bucket_minutes = 60 # 1 hour per file
+retention_hours = 24
+cleanup_interval_secs = 300
+# Parquet row-group max size. Keep this small for large symbol sets (hundreds of open files).
+parquet_batch_size = 2000
+# Per-symbol partitioning keeps one in-memory Arrow builder per open file.
+# For 3 exchanges × 200 symbols (~600 open files), use a smaller batch size to avoid OOM.
+parquet_record_batch_size = 256
+# Soft cap concurrently open parquet files (0 = unlimited).
+# If you require "no data loss", do NOT set this below your active file count (will cause heavy *_partN churn).
+parquet_max_open_files = 0
+# Optional: close files that have not received data recently (helps low-activity symbols).
+parquet_idle_close_secs = 300
+parquet_zstd_level = 3
