@@ -3,3 +3,4 @@
 /config.toml
 /logs
 /.run
+*.csv

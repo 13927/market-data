@@ -381,15 +381,16 @@ status() {
   local pid pgid mode
   read -r pid pgid mode < <(read_pidfile)
   if [[ -z "${pid}" ]]; then
-    echo "not running (no pidfile): ${MARKET_DATA_PID}" >&2
-    if [[ "${KILL_ORPHANS}" == "1" ]]; then
-      local others
-      others="$(list_running_pids_by_bin | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-      if [[ -n "${others}" ]]; then
-        echo "WARN: found running processes without pidfile: ${others}" >&2
-      fi
+    # Fallback: check for running processes matching the binary even if pidfile is missing.
+    local others
+    others="$(list_running_pids_by_bin | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    if [[ -n "${others}" ]]; then
+      echo "running (no pidfile): pids=${others}" >&2
+      exit 0
+    else
+      echo "not running (no pidfile): ${MARKET_DATA_PID}" >&2
+      exit 1
     fi
-    exit 1
   fi
   if is_running "${pid}"; then
     echo "running: pid=${pid}${pgid:+ pgid=${pgid}}${mode:+ mode=${mode}}" >&2
