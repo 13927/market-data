@@ -16,9 +16,11 @@ fn main() -> anyhow::Result<()> {
         "hour",
         "size_bytes",
         "futures_l5_count",
-        "futures_ticker_count",
+        "futures_book_count",
+        "futures_trade_count",
         "spot_l5_count",
-        "spot_ticker_count",
+        "spot_book_count",
+        "spot_trade_count",
     ])?;
 
     for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
@@ -55,9 +57,9 @@ fn main() -> anyhow::Result<()> {
 
         // Only process if we can extract a valid hour? No, process all valid extensions.
 
-        let (f_l5, f_ticker, s_l5, s_ticker) = count_records(path, ext).unwrap_or_else(|e| {
+        let (f_l5, f_book, f_trade, s_l5, s_book, s_trade) = count_records(path, ext).unwrap_or_else(|e| {
             eprintln!("Error reading {}: {}", path.display(), e);
-            (0, 0, 0, 0)
+            (0, 0, 0, 0, 0, 0)
         });
 
         wtr.write_record(&[
@@ -65,19 +67,23 @@ fn main() -> anyhow::Result<()> {
             hour_str,
             &size_bytes.to_string(),
             &f_l5.to_string(),
-            &f_ticker.to_string(),
+            &f_book.to_string(),
+            &f_trade.to_string(),
             &s_l5.to_string(),
-            &s_ticker.to_string(),
+            &s_book.to_string(),
+            &s_trade.to_string(),
         ])?;
 
         println!(
-            "Processed {}: size={} futures_l5={} futures_ticker={} spot_l5={} spot_ticker={}",
+            "Processed {}: size={} f_l5={} f_book={} f_trade={} s_l5={} s_book={} s_trade={}",
             path.display(),
             size_bytes,
             f_l5,
-            f_ticker,
+            f_book,
+            f_trade,
             s_l5,
-            s_ticker
+            s_book,
+            s_trade
         );
     }
 
@@ -86,17 +92,29 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn count_records(path: &Path, ext: &str) -> anyhow::Result<(usize, usize, usize, usize)> {
+fn count_records(path: &Path, ext: &str) -> anyhow::Result<(usize, usize, usize, usize, usize, usize)> {
     let mut futures_l5 = 0;
-    let mut futures_ticker = 0;
+    let mut futures_book = 0;
+    let mut futures_trade = 0;
     let mut spot_l5 = 0;
-    let mut spot_ticker = 0;
+    let mut spot_book = 0;
+    let mut spot_trade = 0;
+
+    let mut increment = |s: &str| {
+        match s {
+            "swap_l5" | "future_l5" => futures_l5 += 1,
+            "swap_ticker" | "future_book" => futures_book += 1,
+            "swap_trade" | "future_trade" => futures_trade += 1,
+            "spot_l5" => spot_l5 += 1,
+            "spot_ticker" | "spot_book" => spot_book += 1,
+            "spot_trade" => spot_trade += 1,
+            _ => {}
+        }
+    };
 
     match ext {
         "csv" => {
             let mut rdr = csv::Reader::from_path(path)?;
-            // Assume header "stream" exists
-            // We need to handle case where header might be missing or different?
             // Assuming standard format written by our writer.
             let headers = rdr.headers()?.clone();
             let stream_idx = headers.iter().position(|h| h == "stream");
@@ -105,13 +123,7 @@ fn count_records(path: &Path, ext: &str) -> anyhow::Result<(usize, usize, usize,
                 for result in rdr.records() {
                     let record = result?;
                     if let Some(s) = record.get(idx) {
-                        match s {
-                            "swap_l5" => futures_l5 += 1,
-                            "swap_ticker" => futures_ticker += 1,
-                            "spot_l5" => spot_l5 += 1,
-                            "spot_ticker" => spot_ticker += 1,
-                            _ => {}
-                        };
+                        increment(s);
                     }
                 }
             }
@@ -127,13 +139,7 @@ fn count_records(path: &Path, ext: &str) -> anyhow::Result<(usize, usize, usize,
                 }
                 if let Ok(v) = serde_json::from_str::<Value>(&line) {
                     if let Some(s) = v.get("stream").and_then(|s| s.as_str()) {
-                        match s {
-                            "swap_l5" => futures_l5 += 1,
-                            "swap_ticker" => futures_ticker += 1,
-                            "spot_l5" => spot_l5 += 1,
-                            "spot_ticker" => spot_ticker += 1,
-                            _ => {}
-                        };
+                        increment(s);
                     }
                 }
             }
@@ -142,24 +148,13 @@ fn count_records(path: &Path, ext: &str) -> anyhow::Result<(usize, usize, usize,
             let file = fs::File::open(path)?;
             let reader = SerializedFileReader::new(file)?;
             // Naive iteration using get_row_iter
-            // Projection: we only need "stream" column if possible?
-            // get_row_iter(projection_schema)
-            // But constructing projection schema is complex.
-            // Just read all for now, as files are likely not incredibly wide (MarketEvent is ~30 cols).
-
             for row in reader.get_row_iter(None)? {
                 let row = row?;
                 // Iterate columns to find "stream"
                 for (name, field) in row.get_column_iter() {
                     if name == "stream" {
                         if let parquet::record::Field::Str(s) = field {
-                            match s.as_ref() {
-                                "swap_l5" => futures_l5 += 1,
-                                "swap_ticker" => futures_ticker += 1,
-                                "spot_l5" => spot_l5 += 1,
-                                "spot_ticker" => spot_ticker += 1,
-                                _ => {}
-                            };
+                            increment(s.as_ref());
                         }
                         break;
                     }
@@ -169,5 +164,12 @@ fn count_records(path: &Path, ext: &str) -> anyhow::Result<(usize, usize, usize,
         _ => {}
     }
 
-    Ok((futures_l5, futures_ticker, spot_l5, spot_ticker))
+    Ok((
+        futures_l5,
+        futures_book,
+        futures_trade,
+        spot_l5,
+        spot_book,
+        spot_trade,
+    ))
 }

@@ -2,17 +2,17 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Stream {
-    #[serde(rename = "spot_ticker")]
+    #[serde(rename = "spot_book")]
     SpotBook,
     #[serde(rename = "spot_l5")]
     SpotL5,
     #[serde(rename = "spot_trade")]
     SpotTrade,
-    #[serde(rename = "swap_ticker")]
+    #[serde(rename = "future_book")]
     FutureBook,
-    #[serde(rename = "swap_l5")]
+    #[serde(rename = "future_l5")]
     FutureL5,
-    #[serde(rename = "swap_trade")]
+    #[serde(rename = "future_trade")]
     FutureTrade,
 }
 
