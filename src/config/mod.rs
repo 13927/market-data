@@ -222,6 +222,9 @@ pub struct KucoinConfig {
 
     #[serde(default)]
     pub l5: bool,
+
+    #[serde(default)]
+    pub trade: bool,
 }
 
 impl Default for KucoinConfig {
@@ -237,6 +240,7 @@ impl Default for KucoinConfig {
             symbols: vec![],
             ticker: true,
             l5: true,
+            trade: true,
         }
     }
 }
@@ -289,6 +293,9 @@ pub struct KucoinFuturesConfig {
 
     #[serde(default)]
     pub l5: bool,
+
+    #[serde(default)]
+    pub trade: bool,
 }
 
 impl Default for KucoinFuturesConfig {
@@ -302,6 +309,7 @@ impl Default for KucoinFuturesConfig {
             symbols: vec![],
             ticker: true,
             l5: true,
+            trade: true,
         }
     }
 }
@@ -332,10 +340,16 @@ pub struct GateConfig {
     pub spot_l5: bool,
 
     #[serde(default = "default_true")]
+    pub spot_trade: bool,
+
+    #[serde(default = "default_true")]
     pub swap_ticker: bool,
 
     #[serde(default = "default_true")]
     pub swap_l5: bool,
+
+    #[serde(default = "default_true")]
+    pub swap_trade: bool,
 }
 
 impl Default for GateConfig {
@@ -347,8 +361,10 @@ impl Default for GateConfig {
             symbols: vec![],
             spot_ticker: true,
             spot_l5: true,
+            spot_trade: true,
             swap_ticker: true,
             swap_l5: true,
+            swap_trade: true,
         }
     }
 }

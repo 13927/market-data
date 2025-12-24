@@ -502,6 +502,7 @@ async fn main() -> anyhow::Result<()> {
                 symbols: vec![],
                 ticker: cfg.kucoin.ticker,
                 l5: cfg.kucoin.l5,
+                trade: cfg.kucoin.trade,
             }
         };
 

@@ -213,6 +213,7 @@ fn build_topics_from_symbols(
     symbols: &[String],
     ticker: bool,
     l5: bool,
+    trade: bool,
 ) -> Vec<(String, Stream, String)> {
     let mut out = Vec::new();
     for topic_symbol in symbols {
@@ -230,6 +231,13 @@ fn build_topics_from_symbols(
                 // KuCoin spot L5 topic prefix is `/spotMarket/…` (the older `/market/…` prefix returns 404).
                 format!("/spotMarket/level2Depth5:{topic_symbol}"),
                 Stream::SpotL5,
+                stored_symbol.clone(),
+            ));
+        }
+        if trade {
+            out.push((
+                format!("/market/match:{topic_symbol}"),
+                Stream::SpotTrade,
                 stored_symbol.clone(),
             ));
         }
@@ -340,7 +348,7 @@ pub async fn spawn_kucoin_public_ws(
         }
     }
 
-    let topics = build_topics_from_symbols(&chosen_symbols, cfg.ticker, cfg.l5);
+    let topics = build_topics_from_symbols(&chosen_symbols, cfg.ticker, cfg.l5, cfg.trade);
     if topics.is_empty() {
         anyhow::bail!("kucoin.enabled=true but no topics enabled / symbols empty");
     }
@@ -630,6 +638,41 @@ fn handle_kucoin_text(
             ev.ask5_px = p;
             ev.ask5_qty = q;
 
+            if sender.try_send(ev).is_err() {
+                crate::util::metrics::inc_dropped_events(1);
+            }
+        }
+        Stream::SpotTrade => {
+            let data = match v.get("data") {
+                Some(d) => d,
+                None => return Ok(()),
+            };
+            let local_ts = now_ms();
+            let mut ev = MarketEvent::new("kucoin", Stream::SpotTrade, stored_symbol.to_string());
+            ev.local_ts = local_ts;
+            ev.time_str = format_time_str_ms(local_ts);
+            ev.update_id = data.get("sequence").and_then(parse_u64_value);
+            ev.event_time = data
+                .get("ts")
+                .and_then(|x| x.as_i64())
+                .or_else(|| data.get("time").and_then(|x| x.as_i64()));
+            let side = data.get("side").and_then(|x| x.as_str()).unwrap_or("");
+            let px = data
+                .get("price")
+                .and_then(|x| x.as_str().and_then(|s| s.parse::<f64>().ok()))
+                .or_else(|| data.get("p").and_then(|x| x.as_str().and_then(|s| s.parse::<f64>().ok())));
+            let qty = data
+                .get("size")
+                .and_then(|x| x.as_str().and_then(|s| s.parse::<f64>().ok()))
+                .or_else(|| data.get("amount").and_then(|x| x.as_str().and_then(|s| s.parse::<f64>().ok())))
+                .or_else(|| data.get("q").and_then(|x| x.as_str().and_then(|s| s.parse::<f64>().ok())));
+            if side.eq_ignore_ascii_case("sell") {
+                ev.bid_px = px;
+                ev.bid_qty = qty;
+            } else if side.eq_ignore_ascii_case("buy") {
+                ev.ask_px = px;
+                ev.ask_qty = qty;
+            }
             if sender.try_send(ev).is_err() {
                 crate::util::metrics::inc_dropped_events(1);
             }

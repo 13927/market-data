@@ -190,7 +190,7 @@ pub async fn spawn_gate_ws(
         anyhow::bail!("gate.enabled=true but symbols is empty");
     }
     let mut handles = Vec::new();
-    if cfg.spot_ticker || cfg.spot_l5 {
+    if cfg.spot_ticker || cfg.spot_l5 || cfg.spot_trade {
         let mut selected: Vec<(String, String)> = Vec::new();
         match fetch_gate_spot_pairs().await {
             Ok(active) => {
@@ -226,12 +226,13 @@ pub async fn spawn_gate_ws(
                 selected,
                 cfg.spot_ticker,
                 cfg.spot_l5,
+                cfg.spot_trade,
                 sender.clone(),
             )?);
         }
     }
 
-    if cfg.swap_ticker || cfg.swap_l5 {
+    if cfg.swap_ticker || cfg.swap_l5 || cfg.swap_trade {
         let (usdt_res, usdc_res) = tokio::join!(
             fetch_gate_futures_contracts("usdt"),
             fetch_gate_futures_contracts("usdc")
@@ -295,6 +296,7 @@ pub async fn spawn_gate_ws(
                 usdt_symbols,
                 cfg.swap_ticker,
                 cfg.swap_l5,
+                cfg.swap_trade,
                 sender.clone(),
             )?);
         }
@@ -304,6 +306,7 @@ pub async fn spawn_gate_ws(
                 usdc_symbols,
                 cfg.swap_ticker,
                 cfg.swap_l5,
+                cfg.swap_trade,
                 sender.clone(),
             )?);
         }
@@ -317,6 +320,7 @@ fn spawn_gate_spot_ws(
     symbols: Vec<(String, String)>,
     ticker: bool,
     l5: bool,
+    trade: bool,
     sender: crossbeam_channel::Sender<MarketEvent>,
 ) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
     const SYMBOLS_PER_CONN: usize = 100;
@@ -332,7 +336,7 @@ fn spawn_gate_spot_ws(
             }
             let mut backoff_secs = 1u64;
             loop {
-                let res = run_gate_spot_once(&endpoint, &chunk, ticker, l5, &sender).await;
+                let res = run_gate_spot_once(&endpoint, &chunk, ticker, l5, trade, &sender).await;
                 if let Err(err) = &res {
                     warn!("gate spot ws ended: {err:#} backoff_secs={backoff_secs}");
                 }
@@ -352,6 +356,7 @@ fn spawn_gate_futures_ws(
     symbols: Vec<(String, String)>,
     ticker: bool,
     l5: bool,
+    trade: bool,
     sender: crossbeam_channel::Sender<MarketEvent>,
 ) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
     const SYMBOLS_PER_CONN: usize = 100;
@@ -367,7 +372,7 @@ fn spawn_gate_futures_ws(
             }
             let mut backoff_secs = 1u64;
             loop {
-                let res = run_gate_futures_once(&endpoint, &chunk, ticker, l5, &sender).await;
+                let res = run_gate_futures_once(&endpoint, &chunk, ticker, l5, trade, &sender).await;
                 if let Err(err) = &res {
                     warn!("gate futures ws ended: {err:#} backoff_secs={backoff_secs}");
                 }
@@ -387,6 +392,7 @@ async fn run_gate_spot_once(
     symbols: &[(String, String)],
     ticker: bool,
     l5: bool,
+    trade: bool,
     sender: &crossbeam_channel::Sender<MarketEvent>,
 ) -> anyhow::Result<(u64, Duration)> {
     let url = normalize_gate_spot_endpoint(endpoint);
@@ -429,6 +435,21 @@ async fn run_gate_spot_once(
                 .send(Message::Text(msg.to_string()))
                 .await
                 .context("gate spot subscribe order_book")?;
+            tokio::time::sleep(Duration::from_millis(GATE_SUBSCRIBE_DELAY_MS)).await;
+        }
+    }
+    if trade {
+        for (sym, _) in symbols {
+            let msg = serde_json::json!({
+                "time": now_ms() / 1000,
+                "channel": "spot.trades",
+                "event": "subscribe",
+                "payload": [sym]
+            });
+            write
+                .send(Message::Text(msg.to_string()))
+                .await
+                .context("gate spot subscribe trades")?;
             tokio::time::sleep(Duration::from_millis(GATE_SUBSCRIBE_DELAY_MS)).await;
         }
     }
@@ -479,6 +500,7 @@ async fn run_gate_futures_once(
     symbols: &[(String, String)],
     ticker: bool,
     l5: bool,
+    trade: bool,
     sender: &crossbeam_channel::Sender<MarketEvent>,
 ) -> anyhow::Result<(u64, Duration)> {
     let url = normalize_gate_futures_endpoint(endpoint);
@@ -524,6 +546,21 @@ async fn run_gate_futures_once(
                 .send(Message::Text(msg.to_string()))
                 .await
                 .context("gate futures subscribe order_book")?;
+            tokio::time::sleep(Duration::from_millis(GATE_SUBSCRIBE_DELAY_MS)).await;
+        }
+    }
+    if trade {
+        for (sym, _) in symbols {
+            let msg = serde_json::json!({
+                "time": now_ms() / 1000,
+                "channel": "futures.trades",
+                "event": "subscribe",
+                "payload": [sym]
+            });
+            write
+                .send(Message::Text(msg.to_string()))
+                .await
+                .context("gate futures subscribe trades")?;
             tokio::time::sleep(Duration::from_millis(GATE_SUBSCRIBE_DELAY_MS)).await;
         }
     }
@@ -682,9 +719,78 @@ fn handle_gate_text(
         return Ok(());
     }
 
+    if channel.ends_with("trades") {
+        if let Some(arr) = result.as_array() {
+            for item in arr {
+                emit_gate_trade(exchange, is_futures, item, &v, symbols, sender, local_ts, &time_str)?;
+            }
+            return Ok(());
+        } else {
+            emit_gate_trade(exchange, is_futures, result, &v, symbols, sender, local_ts, &time_str)?;
+            return Ok(());
+        }
+    }
+
     Ok(())
 }
 
+fn emit_gate_trade(
+    exchange: &str,
+    is_futures: bool,
+    item: &serde_json::Value,
+    envelope: &serde_json::Value,
+    symbols: &[(String, String)],
+    sender: &crossbeam_channel::Sender<MarketEvent>,
+    local_ts: i64,
+    time_str: &str,
+) -> anyhow::Result<()> {
+    let sym = get_str(item, &["currency_pair", "contract"]).or_else(|| {
+        envelope
+            .get("payload")
+            .and_then(|p| p.get(0))
+            .and_then(|x| x.as_str())
+    });
+    let Some(sym) = sym else {
+        return Ok(());
+    };
+    let stored = symbols
+        .iter()
+        .find(|(s, _)| s.eq_ignore_ascii_case(sym))
+        .map(|(_, stored)| stored.as_str())
+        .unwrap_or_else(|| sym);
+
+    let mut ev = MarketEvent::new(
+        exchange,
+        if is_futures {
+            Stream::FutureTrade
+        } else {
+            Stream::SpotTrade
+        },
+        stored.to_string(),
+    );
+    ev.local_ts = local_ts;
+    ev.time_str = time_str.to_string();
+    ev.update_id = get_u64(item, &["id", "trade_id", "match_id"]);
+    ev.event_time = parse_ts_ms(
+        item.get("create_time_ms")
+            .or_else(|| item.get("t"))
+            .or_else(|| item.get("time")),
+    );
+    let side = get_str(item, &["side", "S"]).unwrap_or("");
+    let px = get_f64(item, &["price", "p"]);
+    let qty = get_f64(item, &["amount", "q", "size"]);
+    if side.eq_ignore_ascii_case("sell") {
+        ev.bid_px = px;
+        ev.bid_qty = qty;
+    } else if side.eq_ignore_ascii_case("buy") {
+        ev.ask_px = px;
+        ev.ask_qty = qty;
+    }
+    if sender.try_send(ev).is_err() {
+        crate::util::metrics::inc_dropped_events(1);
+    }
+    Ok(())
+}
 fn truncate_for_log(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
