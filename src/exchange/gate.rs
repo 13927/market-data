@@ -14,7 +14,7 @@ use crate::util::time::{format_time_str_ms, now_ms};
 const GATE_ACTIVE_PING_EVERY_SECS: u64 = 15;
 const GATE_IDLE_DEAD_SECS: u64 = 60;
 const GATE_REST_BASE: &str = "https://api.gateio.ws/api/v4";
-const GATE_SUBSCRIBE_DELAY_MS: u64 = 100;
+const GATE_SUBSCRIBE_DELAY_MS: u64 = 300;
 const GATE_CONN_STAGGER_MS: u64 = 500;
 
 #[derive(Debug, Deserialize)]
@@ -323,7 +323,7 @@ fn spawn_gate_spot_ws(
     trade: bool,
     sender: crossbeam_channel::Sender<MarketEvent>,
 ) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
-    const SYMBOLS_PER_CONN: usize = 100;
+    const SYMBOLS_PER_CONN: usize = 50;
     let mut handles = Vec::new();
     for (idx, chunk) in symbols.chunks(SYMBOLS_PER_CONN).enumerate() {
         let endpoint = endpoint.clone();
@@ -359,7 +359,7 @@ fn spawn_gate_futures_ws(
     trade: bool,
     sender: crossbeam_channel::Sender<MarketEvent>,
 ) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
-    const SYMBOLS_PER_CONN: usize = 100;
+    const SYMBOLS_PER_CONN: usize = 30;
     let mut handles = Vec::new();
     for (idx, chunk) in symbols.chunks(SYMBOLS_PER_CONN).enumerate() {
         let endpoint = endpoint.clone();
