@@ -68,7 +68,12 @@ async fn exchanges_spot_futures_streams() {
         .await
         .expect("spawn gate ws");
 
-    let sbe_key = std::env::var("BINANCE_SBE_API_KEY").expect("set BINANCE_SBE_API_KEY for integration test");
+    let sbe_key = if let Ok(cfg) = market_data::config::Config::from_path("config.toml") {
+        cfg.binance_spot_sbe.api_key.or_else(|| std::env::var("BINANCE_SBE_API_KEY").ok())
+    } else {
+        std::env::var("BINANCE_SBE_API_KEY").ok()
+    }
+    .expect("set binance_spot_sbe.api_key in config.toml or BINANCE_SBE_API_KEY env var for integration test");
     let sbe_handle = spawn_binance_sbe_task(&sbe_key, tx.clone());
 
     let mut pending = expect_set();

@@ -17,7 +17,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_DIR="${1:-${ROOT}/data}"
-OUT_CSV="${2:-}"
+OUT_CSV="${2:-stream_counts_report.csv}"
 BUILD="${BUILD:-1}"
 
 BIN="${ROOT}/target/release/parquet_stream_counts"
@@ -32,8 +32,9 @@ if [[ -n "${OUT_CSV}" ]]; then
   echo "path,rows,spot_ticker,swap_ticker,spot_l5,swap_l5" > "${OUT_CSV}"
 fi
 
-# Iterate files in stable order
-find "${DATA_DIR}" -type f -name "*.parquet" -print0 | sort -z | while IFS= read -r -d '' f; do
+# Iterate files in stable order, excluding _inprogress files which may be corrupt/incomplete
+find "${DATA_DIR}" -type f -name "*.parquet" ! -name "*_inprogress.parquet" -print0 | sort -z | while IFS= read -r -d '' f; do
+  echo "Processing: ${f}" >&2
   # Run the counter
   if ! out="$("${BIN}" "${f}" 2>&1)"; then
     echo "ERROR: failed: ${f}" >&2

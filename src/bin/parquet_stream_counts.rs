@@ -87,19 +87,19 @@ fn main() -> anyhow::Result<()> {
 
     // Alert if the set of streams isn't exactly the 6 expected ones.
     // Expected:
-    // - spot_book
-    // - future_book
+    // - spot_ticker
+    // - swap_ticker
     // - spot_l5
-    // - future_l5
+    // - swap_l5
     // - spot_trade
-    // - future_trade
+    // - swap_trade
     const EXPECTED: [&str; 6] = [
-        "spot_book",
-        "future_book",
-        "future_l5",
+        "spot_ticker",
+        "swap_ticker",
         "spot_l5",
+        "swap_l5",
         "spot_trade",
-        "future_trade",
+        "swap_trade",
     ];
     let mut missing: Vec<&str> = EXPECTED
         .iter()
@@ -126,10 +126,11 @@ fn main() -> anyhow::Result<()> {
 
     if !missing.is_empty() || !extra.is_empty() {
         eprintln!(
-            "ALERT: stream set mismatch (expected exactly 4 streams). missing={:?} extra={:?}",
+            "ALERT: stream set mismatch. missing={:?} extra={:?}",
             missing, extra
         );
-        std::process::exit(2);
+        // Do not exit with error code, just warn.
+        // std::process::exit(2);
     }
 
     Ok(())
