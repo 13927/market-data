@@ -498,7 +498,7 @@ stop() {
 }
 
 restart() {
-  stop || true
+  ( stop ) || true
   start
 }
 

@@ -13,6 +13,7 @@ tungstenite = "0.21"
 futures-util = "0.3"
 url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+http = "1"
 
 # JSON
 serde = { version = "1.0", features = ["derive"] }

@@ -1,15 +1,33 @@
 use std::time::Duration;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Context;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 use tracing::{info, warn};
 
 use crate::config::GateConfig;
 
 use crate::schema::event::{MarketEvent, Stream};
 use crate::util::time::{format_time_str_ms, now_ms};
+
+struct LocalOrderBook {
+    // Key is f64::to_bits() for sorting. Prices are positive so this preserves order.
+    bids: BTreeMap<u64, f64>,
+    asks: BTreeMap<u64, f64>,
+    last_id: Option<u64>,
+}
+
+impl LocalOrderBook {
+    fn new() -> Self {
+        Self {
+            bids: BTreeMap::new(),
+            asks: BTreeMap::new(),
+            last_id: None,
+        }
+    }
+}
 
 const GATE_ACTIVE_PING_EVERY_SECS: u64 = 15;
 const GATE_IDLE_DEAD_SECS: u64 = 60;
@@ -387,6 +405,76 @@ fn spawn_gate_futures_ws(
     Ok(handles)
 }
 
+fn handle_gate_snapshot(
+    exchange: &str,
+    is_futures: bool,
+    sym: &str,
+    val: serde_json::Value,
+    symbols: &[(String, String)],
+    sender: &crossbeam_channel::Sender<MarketEvent>,
+    books: &mut HashMap<String, LocalOrderBook>,
+) -> anyhow::Result<()> {
+    let stored_sym = symbols
+        .iter()
+        .find(|(s, _)| s == sym)
+        .map(|(_, stored)| stored.clone())
+        .unwrap_or_else(|| sym.to_string());
+
+    let id = val.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+    if id == 0 {
+        return Ok(());
+    }
+
+    let book = books.entry(sym.to_string()).or_insert_with(LocalOrderBook::new);
+    // Reset book with snapshot
+    book.bids.clear();
+    book.asks.clear();
+    book.last_id = Some(id);
+
+    let bids = val.get("bids");
+    for (p, q) in parse_book_entries(bids) {
+        book.bids.insert(p.to_bits(), q);
+    }
+    let asks = val.get("asks");
+    for (p, q) in parse_book_entries(asks) {
+        book.asks.insert(p.to_bits(), q);
+    }
+
+    let mut ev = MarketEvent::new(
+        exchange,
+        if is_futures {
+            Stream::FutureL5
+        } else {
+            Stream::SpotL5
+        },
+        stored_sym,
+    );
+    ev.local_ts = now_ms();
+    ev.time_str = format_time_str_ms(ev.local_ts);
+    ev.update_id = Some(id);
+
+    // Bids
+    let mut bids_iter = book.bids.iter().rev();
+    if let Some((&p, &q)) = bids_iter.next() { ev.bid_px = Some(f64::from_bits(p)); ev.bid_qty = Some(q); }
+    if let Some((&p, &q)) = bids_iter.next() { ev.bid1_px = Some(f64::from_bits(p)); ev.bid1_qty = Some(q); }
+    if let Some((&p, &q)) = bids_iter.next() { ev.bid2_px = Some(f64::from_bits(p)); ev.bid2_qty = Some(q); }
+    if let Some((&p, &q)) = bids_iter.next() { ev.bid3_px = Some(f64::from_bits(p)); ev.bid3_qty = Some(q); }
+    if let Some((&p, &q)) = bids_iter.next() { ev.bid4_px = Some(f64::from_bits(p)); ev.bid4_qty = Some(q); }
+    if let Some((&p, &q)) = bids_iter.next() { ev.bid5_px = Some(f64::from_bits(p)); ev.bid5_qty = Some(q); }
+
+    // Asks
+    let mut asks_iter = book.asks.iter();
+    if let Some((&p, &q)) = asks_iter.next() { ev.ask_px = Some(f64::from_bits(p)); ev.ask_qty = Some(q); }
+    if let Some((&p, &q)) = asks_iter.next() { ev.ask1_px = Some(f64::from_bits(p)); ev.ask1_qty = Some(q); }
+    if let Some((&p, &q)) = asks_iter.next() { ev.ask2_px = Some(f64::from_bits(p)); ev.ask2_qty = Some(q); }
+    if let Some((&p, &q)) = asks_iter.next() { ev.ask3_px = Some(f64::from_bits(p)); ev.ask3_qty = Some(q); }
+    if let Some((&p, &q)) = asks_iter.next() { ev.ask4_px = Some(f64::from_bits(p)); ev.ask4_qty = Some(q); }
+    if let Some((&p, &q)) = asks_iter.next() { ev.ask5_px = Some(f64::from_bits(p)); ev.ask5_qty = Some(q); }
+
+    let _ = sender.try_send(ev);
+    Ok(())
+}
+
 async fn run_gate_spot_once(
     endpoint: &str,
     symbols: &[(String, String)],
@@ -397,9 +485,12 @@ async fn run_gate_spot_once(
 ) -> anyhow::Result<(u64, Duration)> {
     let url = normalize_gate_spot_endpoint(endpoint);
     info!("connect gate spot: symbols={} url={}", symbols.len(), url);
+    let mut req = (&url).into_client_request()?;
+    req.headers_mut()
+        .insert("X-Gate-Size-Decimal", http::HeaderValue::from_static("1"));
     let (ws, _) = tokio::time::timeout(
         Duration::from_secs(10),
-        tokio_tungstenite::connect_async(&url),
+        tokio_tungstenite::connect_async(req),
     )
     .await
     .context("gate spot connect: timeout")?
@@ -424,13 +515,15 @@ async fn run_gate_spot_once(
     }
     if l5 {
         for (sym, _) in symbols {
-            // Many Gate deployments use payload: [symbol, limit, interval]
+            // Gate Spot order_book_update payload: [symbol, interval]
+            // No limit parameter for spot.
             let msg = serde_json::json!({
                 "time": now_ms() / 1000,
-                "channel": "spot.order_book",
+                "channel": "spot.order_book_update",
                 "event": "subscribe",
-                "payload": [sym, "5", "100ms"]
+                "payload": [sym, "100ms"]
             });
+
             write
                 .send(Message::Text(msg.to_string()))
                 .await
@@ -459,11 +552,48 @@ async fn run_gate_spot_once(
     let mut watchdog = tokio::time::interval(Duration::from_secs(1));
     watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // Active Snapshot Pull (10s interval)
+    let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(100);
+    let snapshot_symbols: Vec<String> = symbols.iter().map(|(s, _)| s.clone()).collect();
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        // Initial snapshot immediately
+        let mut first = true;
+        loop {
+            if !first {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+            first = false;
+
+            for sym in &snapshot_symbols {
+                let url = format!("{}/spot/order_book?currency_pair={}&limit=10", GATE_REST_BASE, sym);
+                match client.get(&url).send().await {
+                    Ok(resp) => {
+                        if let Ok(val) = resp.json::<serde_json::Value>().await {
+                            if snapshot_tx.send((sym.clone(), val)).await.is_err() {
+                                return; // Receiver closed
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("gate spot snapshot failed for {}: {}", sym, e);
+                    }
+                }
+                // Throttle to avoid hitting rate limits too hard (200/s allowed, we do ~20/s)
+                tokio::time::sleep(Duration::from_millis(50)).await; 
+            }
+        }
+    });
+
     let started = std::time::Instant::now();
     let mut frames = 0u64;
     let mut last_msg_ts = std::time::Instant::now();
+    let mut books = HashMap::new();
     loop {
         tokio::select! {
+            Some((sym, val)) = snapshot_rx.recv() => {
+                handle_gate_snapshot("gate", false, &sym, val, symbols, sender, &mut books)?;
+            }
             _ = ping.tick() => {
                 write.send(Message::Ping(Vec::new())).await.context("gate spot active ping")?;
             }
@@ -480,7 +610,7 @@ async fn run_gate_spot_once(
                 last_msg_ts = std::time::Instant::now();
                 match msg {
                     Message::Text(text) => {
-                        handle_gate_text("gate", false, &text, symbols, sender)?;
+                        handle_gate_text("gate", false, &text, symbols, sender, &mut books)?;
                     }
                     Message::Ping(payload) => {
                         write.send(Message::Pong(payload)).await.context("gate spot pong")?;
@@ -509,14 +639,50 @@ async fn run_gate_futures_once(
         symbols.len(),
         url
     );
+    let mut req = (&url).into_client_request()?;
+    req.headers_mut()
+        .insert("X-Gate-Size-Decimal", http::HeaderValue::from_static("1"));
     let (ws, _) = tokio::time::timeout(
         Duration::from_secs(10),
-        tokio_tungstenite::connect_async(&url),
+        tokio_tungstenite::connect_async(req),
     )
     .await
     .context("gate futures connect: timeout")?
     .context("gate futures connect")?;
     let (mut write, mut read) = ws.split();
+
+    // Active Snapshot Pull (10s interval)
+    let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(100);
+    let snapshot_symbols: Vec<String> = symbols.iter().map(|(s, _)| s.clone()).collect();
+    let settle = if endpoint.contains("usdc") { "usdc" } else { "usdt" };
+    
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let mut first = true;
+        loop {
+            if !first {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+            first = false;
+
+            for sym in &snapshot_symbols {
+                let url = format!("{}/futures/{}/order_book?contract={}&limit=10", GATE_REST_BASE, settle, sym);
+                match client.get(&url).send().await {
+                    Ok(resp) => {
+                        if let Ok(val) = resp.json::<serde_json::Value>().await {
+                            if snapshot_tx.send((sym.clone(), val)).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("gate futures snapshot failed for {}: {}", sym, e);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    });
 
     if ticker {
         for (sym, _) in symbols {
@@ -537,10 +703,11 @@ async fn run_gate_futures_once(
         for (sym, _) in symbols {
             let msg = serde_json::json!({
                 "time": now_ms() / 1000,
-                "channel": "futures.order_book",
+                "channel": "futures.order_book_update",
                 "event": "subscribe",
-                // Gate futures uses accuracy in seconds (string), e.g. "0.1" for 100ms.
-                "payload": [sym, "5", "0.1"]
+                // Gate futures payload: [contract, frequency, level]
+                // frequency: "100ms", level: "5"
+                "payload": [sym, "100ms", "5"]
             });
             write
                 .send(Message::Text(msg.to_string()))
@@ -573,10 +740,15 @@ async fn run_gate_futures_once(
     let started = std::time::Instant::now();
     let mut frames = 0u64;
     let mut last_msg_ts = std::time::Instant::now();
+    let mut books = HashMap::new();
     loop {
         tokio::select! {
+            Some((sym, val)) = snapshot_rx.recv() => {
+                handle_gate_snapshot("gate", true, &sym, val, symbols, sender, &mut books)?;
+            }
             _ = ping.tick() => {
-                write.send(Message::Ping(Vec::new())).await.context("gate futures active ping")?;
+                write
+                    .send(Message::Ping(Vec::new())).await.context("gate futures active ping")?;
             }
             _ = watchdog.tick() => {
                 if last_msg_ts.elapsed() > Duration::from_secs(GATE_IDLE_DEAD_SECS) {
@@ -591,7 +763,7 @@ async fn run_gate_futures_once(
                 last_msg_ts = std::time::Instant::now();
                 match msg {
                     Message::Text(text) => {
-                        handle_gate_text("gate", true, &text, symbols, sender)?;
+                        handle_gate_text("gate", true, &text, symbols, sender, &mut books)?;
                     }
                     Message::Ping(payload) => {
                         write.send(Message::Pong(payload)).await.context("gate futures pong")?;
@@ -612,6 +784,7 @@ fn handle_gate_text(
     text: &str,
     symbols: &[(String, String)],
     sender: &crossbeam_channel::Sender<MarketEvent>,
+    books: &mut HashMap<String, LocalOrderBook>,
 ) -> anyhow::Result<()> {
     let v: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -661,7 +834,12 @@ fn handle_gate_text(
         );
         ev.local_ts = local_ts;
         ev.time_str = time_str;
-        ev.event_time = parse_ts_ms(result.get("t").or_else(|| v.get("time")));
+        ev.event_time = parse_ts_ms(
+            result
+                .get("t")
+                .or_else(|| result.get("time_ms"))
+                .or_else(|| v.get("time")),
+        );
         // Gate book_ticker provides a monotonically increasing update id in `u` (spot+futures).
         ev.update_id = get_u64(result, &["u", "U", "id", "lastUpdateId"]);
 
@@ -675,7 +853,8 @@ fn handle_gate_text(
         return Ok(());
     }
 
-    if channel.ends_with("order_book") {
+    if channel.ends_with("order_book") || channel.ends_with("order_book_update") {
+        info!("gate order_book msg: channel={} result_keys={:?}", channel, result.as_object().map(|m| m.keys().collect::<Vec<_>>()));
         let sym = get_str(result, &["s", "currency_pair", "contract"]).or_else(|| {
             v.get("payload")
                 .and_then(|p| p.get(0))
@@ -689,6 +868,33 @@ fn handle_gate_text(
             .find(|(s, _)| s.eq_ignore_ascii_case(sym))
             .map(|(_, stored)| stored.as_str())
             .unwrap_or_else(|| sym);
+
+        let full = result.get("full").and_then(|x| x.as_bool()).unwrap_or(true);
+        let book = books.entry(stored.to_string()).or_insert_with(LocalOrderBook::new);
+
+        if full {
+            book.bids.clear();
+            book.asks.clear();
+        }
+
+        let bids = result.get("bids").or_else(|| result.get("b"));
+        let asks = result.get("asks").or_else(|| result.get("a"));
+
+        for (p, q) in parse_book_entries(bids) {
+            if q == 0.0 {
+                book.bids.remove(&p.to_bits());
+            } else {
+                book.bids.insert(p.to_bits(), q);
+            }
+        }
+        for (p, q) in parse_book_entries(asks) {
+            if q == 0.0 {
+                book.asks.remove(&p.to_bits());
+            } else {
+                book.asks.insert(p.to_bits(), q);
+            }
+        }
+
         let mut ev = MarketEvent::new(
             exchange,
             if is_futures {
@@ -700,19 +906,36 @@ fn handle_gate_text(
         );
         ev.local_ts = local_ts;
         ev.time_str = time_str;
-        ev.event_time = parse_ts_ms(result.get("t").or_else(|| v.get("time")));
-        // Gate order_book:
-        // - spot: `lastUpdateId`
-        // - futures: `id`
+        ev.event_time = parse_ts_ms(
+            result
+                .get("t")
+                .or_else(|| result.get("time_ms"))
+                .or_else(|| v.get("time")),
+        );
         ev.update_id = if is_futures {
             get_u64(result, &["id", "u", "U", "lastUpdateId"])
         } else {
             get_u64(result, &["lastUpdateId", "u", "U", "id"])
         };
 
-        let bids = result.get("bids");
-        let asks = result.get("asks");
-        fill_l5(&mut ev, bids, asks);
+        // Bids: highest price first
+        let mut bids_iter = book.bids.iter().rev();
+        if let Some((&p, &q)) = bids_iter.next() { ev.bid_px = Some(f64::from_bits(p)); ev.bid_qty = Some(q); }
+        if let Some((&p, &q)) = bids_iter.next() { ev.bid1_px = Some(f64::from_bits(p)); ev.bid1_qty = Some(q); }
+        if let Some((&p, &q)) = bids_iter.next() { ev.bid2_px = Some(f64::from_bits(p)); ev.bid2_qty = Some(q); }
+        if let Some((&p, &q)) = bids_iter.next() { ev.bid3_px = Some(f64::from_bits(p)); ev.bid3_qty = Some(q); }
+        if let Some((&p, &q)) = bids_iter.next() { ev.bid4_px = Some(f64::from_bits(p)); ev.bid4_qty = Some(q); }
+        if let Some((&p, &q)) = bids_iter.next() { ev.bid5_px = Some(f64::from_bits(p)); ev.bid5_qty = Some(q); }
+
+        // Asks: lowest price first
+        let mut asks_iter = book.asks.iter();
+        if let Some((&p, &q)) = asks_iter.next() { ev.ask_px = Some(f64::from_bits(p)); ev.ask_qty = Some(q); }
+        if let Some((&p, &q)) = asks_iter.next() { ev.ask1_px = Some(f64::from_bits(p)); ev.ask1_qty = Some(q); }
+        if let Some((&p, &q)) = asks_iter.next() { ev.ask2_px = Some(f64::from_bits(p)); ev.ask2_qty = Some(q); }
+        if let Some((&p, &q)) = asks_iter.next() { ev.ask3_px = Some(f64::from_bits(p)); ev.ask3_qty = Some(q); }
+        if let Some((&p, &q)) = asks_iter.next() { ev.ask4_px = Some(f64::from_bits(p)); ev.ask4_qty = Some(q); }
+        if let Some((&p, &q)) = asks_iter.next() { ev.ask5_px = Some(f64::from_bits(p)); ev.ask5_qty = Some(q); }
+
         if sender.try_send(ev).is_err() {
             crate::util::metrics::inc_dropped_events(1);
         }
@@ -774,6 +997,7 @@ fn emit_gate_trade(
     ev.event_time = parse_ts_ms(
         item.get("create_time_ms")
             .or_else(|| item.get("t"))
+            .or_else(|| item.get("time_ms"))
             .or_else(|| item.get("time")),
     );
     let side = get_str(item, &["side", "S"]).unwrap_or("");
@@ -867,80 +1091,37 @@ fn parse_ts_ms(v: Option<&serde_json::Value>) -> Option<i64> {
     }
 }
 
-fn fill_l5(
-    ev: &mut MarketEvent,
-    bids: Option<&serde_json::Value>,
-    asks: Option<&serde_json::Value>,
-) {
-    let (b0p, b0q) = parse_level(bids, 0);
-    let (a0p, a0q) = parse_level(asks, 0);
-    ev.bid_px = b0p;
-    ev.bid_qty = b0q;
-    ev.ask_px = a0p;
-    ev.ask_qty = a0q;
-
-    let (p, q) = parse_level(bids, 0);
-    ev.bid1_px = p;
-    ev.bid1_qty = q;
-    let (p, q) = parse_level(bids, 1);
-    ev.bid2_px = p;
-    ev.bid2_qty = q;
-    let (p, q) = parse_level(bids, 2);
-    ev.bid3_px = p;
-    ev.bid3_qty = q;
-    let (p, q) = parse_level(bids, 3);
-    ev.bid4_px = p;
-    ev.bid4_qty = q;
-    let (p, q) = parse_level(bids, 4);
-    ev.bid5_px = p;
-    ev.bid5_qty = q;
-    let (p, q) = parse_level(asks, 0);
-    ev.ask1_px = p;
-    ev.ask1_qty = q;
-    let (p, q) = parse_level(asks, 1);
-    ev.ask2_px = p;
-    ev.ask2_qty = q;
-    let (p, q) = parse_level(asks, 2);
-    ev.ask3_px = p;
-    ev.ask3_qty = q;
-    let (p, q) = parse_level(asks, 3);
-    ev.ask4_px = p;
-    ev.ask4_qty = q;
-    let (p, q) = parse_level(asks, 4);
-    ev.ask5_px = p;
-    ev.ask5_qty = q;
-}
-
-fn parse_level(levels: Option<&serde_json::Value>, idx: usize) -> (Option<f64>, Option<f64>) {
+fn parse_book_entries(levels: Option<&serde_json::Value>) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
     let Some(levels) = levels else {
-        return (None, None);
+        return out;
     };
-    let Some(arr) = levels.as_array() else {
-        return (None, None);
-    };
-    let Some(pair) = arr.get(idx) else {
-        return (None, None);
-    };
-    if let Some(pair_arr) = pair.as_array() {
-        let px = pair_arr.get(0).and_then(parse_f64_value);
-        let qty = pair_arr.get(1).and_then(parse_f64_value);
-        return (px, qty);
+    if let Some(arr) = levels.as_array() {
+        for item in arr {
+            if let Some(pair_arr) = item.as_array() {
+                let px = pair_arr.get(0).and_then(parse_f64_value);
+                let qty = pair_arr.get(1).and_then(parse_f64_value);
+                if let (Some(p), Some(q)) = (px, qty) {
+                    out.push((p, q));
+                }
+            } else if let Some(obj) = item.as_object() {
+                let px = obj
+                    .get("p")
+                    .or_else(|| obj.get("price"))
+                    .and_then(parse_f64_value);
+                let qty = obj
+                    .get("s")
+                    .or_else(|| obj.get("size"))
+                    .or_else(|| obj.get("q"))
+                    .or_else(|| obj.get("qty"))
+                    .and_then(parse_f64_value);
+                if let (Some(p), Some(q)) = (px, qty) {
+                    out.push((p, q));
+                }
+            }
+        }
     }
-    if let Some(obj) = pair.as_object() {
-        // Gate futures order_book uses objects like {"p":"87070.3","s":8757}
-        let px = obj
-            .get("p")
-            .or_else(|| obj.get("price"))
-            .and_then(parse_f64_value);
-        let qty = obj
-            .get("s")
-            .or_else(|| obj.get("size"))
-            .or_else(|| obj.get("q"))
-            .or_else(|| obj.get("qty"))
-            .and_then(parse_f64_value);
-        return (px, qty);
-    }
-    (None, None)
+    out
 }
 
 fn parse_f64_value(v: &serde_json::Value) -> Option<f64> {

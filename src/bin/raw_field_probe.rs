@@ -5,6 +5,7 @@ use anyhow::Context;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 #[derive(Debug, Clone)]
 struct Sample {
@@ -335,7 +336,10 @@ async fn probe_gate(
     canonical_symbol: &str,
 ) -> anyhow::Result<Vec<Sample>> {
     let sym = canonical_to_gate_symbol(canonical_symbol);
-    let (ws, _) = tokio_tungstenite::connect_async(ws_url)
+    let mut req = ws_url.into_client_request()?;
+    req.headers_mut()
+        .insert("X-Gate-Size-Decimal", http::HeaderValue::from_static("1"));
+    let (ws, _) = tokio_tungstenite::connect_async(req)
         .await
         .context("gate connect")?;
     let (write, mut read) = ws.split();
@@ -347,9 +351,9 @@ async fn probe_gate(
     .as_secs();
 
     let (ticker_channel, l5_channel) = if is_futures {
-        ("futures.book_ticker", "futures.order_book")
+        ("futures.book_ticker", "futures.order_book_update")
     } else {
-        ("spot.book_ticker", "spot.order_book")
+        ("spot.book_ticker", "spot.order_book_update")
     };
     let (l5_interval, l5_intv_label) = if is_futures {
         ("0.1", "0.1")
@@ -441,6 +445,11 @@ async fn probe_gate(
                         raw: result,
                     });
                 } else if channel == l5_channel && got_l5.is_none() {
+                    if let Some(full) = result.get("full").and_then(|x| x.as_bool()) {
+                        if !full {
+                            continue;
+                        }
+                    }
                     let mut meta = BTreeMap::new();
                     meta.insert("channel", channel.to_string());
                     meta.insert("l5_interval", l5_intv_label.to_string());

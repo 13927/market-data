@@ -757,12 +757,12 @@ fn event_schema() -> SchemaRef {
 
 fn stream_as_str(ev: &MarketEvent) -> &'static str {
     match ev.stream {
-        crate::schema::event::Stream::SpotBook => "spot_ticker",
+        crate::schema::event::Stream::SpotBook => "spot_book",
         crate::schema::event::Stream::SpotL5 => "spot_l5",
         crate::schema::event::Stream::SpotTrade => "spot_trade",
-        crate::schema::event::Stream::FutureBook => "swap_ticker",
-        crate::schema::event::Stream::FutureL5 => "swap_l5",
-        crate::schema::event::Stream::FutureTrade => "swap_trade",
+        crate::schema::event::Stream::FutureBook => "future_book",
+        crate::schema::event::Stream::FutureL5 => "future_l5",
+        crate::schema::event::Stream::FutureTrade => "future_trade",
     }
 }
 

@@ -86,21 +86,16 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Alert if the set of streams isn't exactly the 6 expected ones.
-    // Expected:
-    // - spot_ticker
-    // - swap_ticker
+    // 统一命名为：
+    // - spot_book
+    // - future_book
     // - spot_l5
-    // - swap_l5
+    // - future_l5
     // - spot_trade
-    // - swap_trade
-    const EXPECTED: [&str; 6] = [
-        "spot_ticker",
-        "swap_ticker",
-        "spot_l5",
-        "swap_l5",
-        "spot_trade",
-        "swap_trade",
-    ];
+    // - future_trade
+
+    const EXPECTED: [&str; 6] =
+        ["spot_book", "future_book", "spot_l5", "future_l5", "spot_trade", "future_trade"];
     let mut missing: Vec<&str> = EXPECTED
         .iter()
         .copied()

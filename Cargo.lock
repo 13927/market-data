@@ -1133,6 +1133,7 @@ dependencies = [
  "crossbeam-channel",
  "csv",
  "futures-util",
+ "http",
  "parquet",
  "reqwest",
  "serde",
