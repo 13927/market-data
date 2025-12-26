@@ -117,7 +117,7 @@ pub fn parse_event_value(
             fill_l5(&mut ev, data);
         }
         BinanceJsonKind::FutureL5 => {
-            ev.update_id = get_u64(data, "u");
+            ev.update_id = get_u64(data, "u").or_else(|| get_u64(data, "lastUpdateId"));
             ev.event_time = get_i64(data, "E");
             ev.trade_time = get_i64(data, "T");
             fill_l5(&mut ev, data);
