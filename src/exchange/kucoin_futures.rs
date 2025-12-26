@@ -222,10 +222,22 @@ pub fn spawn_kucoin_futures_public_ws(
                 tokio::time::sleep(start_delay).await;
             }
             let mut backoff_secs = 1u64;
+            let mut ended_warn_count = 0u64;
+            let mut last_backoff_logged = 0u64;
             loop {
                 let res = run_kucoin_futures_ws_once(&cfg, pacer.as_deref(), &chunk, &sender).await;
                 if let Err(err) = &res {
-                    warn!("kucoin_futures ws ended: {err:#} backoff_secs={backoff_secs}");
+                    ended_warn_count += 1;
+                    if ended_warn_count == 1
+                        || backoff_secs != last_backoff_logged
+                        || ended_warn_count % 10 == 0
+                    {
+                        warn!(
+                            "kucoin_futures ws ended: {err:#} backoff_secs={} restarts={}",
+                            backoff_secs, ended_warn_count
+                        );
+                        last_backoff_logged = backoff_secs;
+                    }
                 }
                 tokio::time::sleep(jittered_sleep_secs(backoff_secs)).await;
                 let ok = res

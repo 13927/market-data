@@ -353,10 +353,22 @@ fn spawn_gate_spot_ws(
                 tokio::time::sleep(start_delay).await;
             }
             let mut backoff_secs = 1u64;
+            let mut ended_warn_count = 0u64;
+            let mut last_backoff_logged = 0u64;
             loop {
                 let res = run_gate_spot_once(&endpoint, &chunk, ticker, l5, trade, &sender).await;
                 if let Err(err) = &res {
-                    warn!("gate spot ws ended: {err:#} backoff_secs={backoff_secs}");
+                    ended_warn_count += 1;
+                    if ended_warn_count == 1
+                        || backoff_secs != last_backoff_logged
+                        || ended_warn_count % 10 == 0
+                    {
+                        warn!(
+                            "gate spot ws ended: {err:#} backoff_secs={} restarts={}",
+                            backoff_secs, ended_warn_count
+                        );
+                        last_backoff_logged = backoff_secs;
+                    }
                 }
                 tokio::time::sleep(jittered_sleep_secs(backoff_secs)).await;
                 let ok = res
@@ -389,10 +401,22 @@ fn spawn_gate_futures_ws(
                 tokio::time::sleep(start_delay).await;
             }
             let mut backoff_secs = 1u64;
+            let mut ended_warn_count = 0u64;
+            let mut last_backoff_logged = 0u64;
             loop {
                 let res = run_gate_futures_once(&endpoint, &chunk, ticker, l5, trade, &sender).await;
                 if let Err(err) = &res {
-                    warn!("gate futures ws ended: {err:#} backoff_secs={backoff_secs}");
+                    ended_warn_count += 1;
+                    if ended_warn_count == 1
+                        || backoff_secs != last_backoff_logged
+                        || ended_warn_count % 10 == 0
+                    {
+                        warn!(
+                            "gate futures ws ended: {err:#} backoff_secs={} restarts={}",
+                            backoff_secs, ended_warn_count
+                        );
+                        last_backoff_logged = backoff_secs;
+                    }
                 }
                 tokio::time::sleep(jittered_sleep_secs(backoff_secs)).await;
                 let ok = res
@@ -856,7 +880,6 @@ fn handle_gate_text(
     }
 
     if channel.ends_with("order_book") || channel.ends_with("order_book_update") {
-        info!("gate order_book msg: channel={} result_keys={:?}", channel, result.as_object().map(|m| m.keys().collect::<Vec<_>>()));
         let sym = get_str(result, &["s", "currency_pair", "contract"]).or_else(|| {
             v.get("payload")
                 .and_then(|p| p.get(0))

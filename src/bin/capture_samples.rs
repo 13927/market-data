@@ -35,9 +35,6 @@ impl Store {
             e.push(v);
         }
     }
-    fn done(&self) -> bool {
-        self.buf.values().all(|v| v.len() >= self.max_per_cat)
-    }
     fn write_all(&self) -> anyhow::Result<()> {
         for (cat, vals) in &self.buf {
             let mut path = self.base.clone();
@@ -202,8 +199,7 @@ async fn capture_binance_spot_sbe(symbol: String, store: Arc<tokio::sync::Mutex<
         req.headers_mut().insert(header_name, api_key.trim().parse().context("parse X-MBX-APIKEY")?);
         match tokio_tungstenite::connect_async(req).await {
             Ok((ws, _)) => { ws_opt = Some(ws); break; }
-            Err(e) => {
-                let err = anyhow::Error::new(e).context("connect ws");
+            Err(_e) => {
                 continue;
             }
         }
@@ -466,35 +462,6 @@ async fn capture_kucoin_spot(rest_base: String, symbol: String, store: Arc<tokio
     Ok(())
 }
 
-async fn capture_kucoin_spot_delta(rest_base: String, symbol: String, store: Arc<tokio::sync::Mutex<Store>>) -> anyhow::Result<()> {
-    let (endpoint, token) = kucoin_fetch_public_ws(rest_base.as_str()).await?;
-    let topic_symbol = kucoin_spot_symbol(&symbol);
-    let topic = format!("/spotMarket/level2:{topic_symbol}");
-    let url = kucoin_ws_url(&endpoint, &token);
-    let (ws, _) = tokio_tungstenite::connect_async(url).await.context("kucoin spot delta connect")?;
-    let (mut write, mut read) = ws.split();
-    let msg = serde_json::json!({"id":"sub-l2","type":"subscribe","topic":topic,"privateChannel":false,"response":true});
-    write.send(Message::Text(msg.to_string())).await.context("kucoin spot delta subscribe")?;
-    let mut d = 0usize;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    while tokio::time::Instant::now() < deadline {
-        let Some(msg) = timeout(Duration::from_millis(800), read.next()).await.ok().flatten() else { continue };
-        let msg = msg.context("kucoin spot delta read")?;
-        let Message::Text(text) = msg else { continue };
-        let root: Value = match serde_json::from_str(&text) { Ok(v) => v, Err(_) => continue };
-        if root.get("type").and_then(|x| x.as_str()) != Some("message") { continue; }
-        let topic = root.get("topic").and_then(|x| x.as_str()).unwrap_or("");
-        if !topic.starts_with("/spotMarket/level2") { continue; }
-        let data = root.get("data").cloned().unwrap_or(Value::Null);
-        if d < 3 {
-            d += 1;
-            let mut s = store.lock().await;
-            s.push("kucoin_spot/l2_delta", data);
-        }
-    }
-    Ok(())
-}
-
 fn canonical_to_kucoin_futures_contract(symbol: &str) -> Option<String> {
     let upper = symbol.trim().to_ascii_uppercase().replace('-', "");
     let quotes = ["USDT", "USDC", "USD"];
@@ -546,35 +513,6 @@ async fn capture_kucoin_futures(rest_base: String, symbol: String, store: Arc<to
             tr += 1;
             let mut s = store.lock().await;
             s.push("kucoin_swap/trade", data);
-        }
-    }
-    Ok(())
-}
-
-async fn capture_kucoin_futures_delta(rest_base: String, symbol: String, store: Arc<tokio::sync::Mutex<Store>>) -> anyhow::Result<()> {
-    let contract = canonical_to_kucoin_futures_contract(&symbol).context("cannot derive kucoin futures contract from symbol")?;
-    let (endpoint, token) = kucoin_fetch_public_ws(rest_base.as_str()).await?;
-    let topic = format!("/contractMarket/level2:{contract}");
-    let url = kucoin_ws_url(&endpoint, &token);
-    let (ws, _) = tokio_tungstenite::connect_async(url).await.context("kucoin futures delta connect")?;
-    let (mut write, mut read) = ws.split();
-    let msg = serde_json::json!({"id":"sub-l2","type":"subscribe","topic":topic,"privateChannel":false,"response":true});
-    write.send(Message::Text(msg.to_string())).await.context("kucoin futures delta subscribe")?;
-    let mut d = 0usize;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    while tokio::time::Instant::now() < deadline {
-        let Some(msg) = timeout(Duration::from_millis(800), read.next()).await.ok().flatten() else { continue };
-        let msg = msg.context("kucoin futures delta read")?;
-        let Message::Text(text) = msg else { continue };
-        let root: Value = match serde_json::from_str(&text) { Ok(v) => v, Err(_) => continue };
-        if root.get("type").and_then(|x| x.as_str()) != Some("message") { continue; }
-        let topic = root.get("topic").and_then(|x| x.as_str()).unwrap_or("");
-        if !topic.starts_with("/contractMarket/level2") { continue; }
-        let data = root.get("data").cloned().unwrap_or(Value::Null);
-        if d < 3 {
-            d += 1;
-            let mut s = store.lock().await;
-            s.push("kucoin_swap/l2_delta", data);
         }
     }
     Ok(())

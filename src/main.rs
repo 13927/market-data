@@ -183,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
         // Logs are typically redirected to a file via the daemon script; keep them plain.
         .with_ansi(false)
@@ -233,6 +233,8 @@ async fn main() -> anyhow::Result<()> {
                 let header_refs: Vec<(&str, &str)> =
                     headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
                 let mut backoff_secs = 1u64;
+                let mut ended_warn_count = 0u64;
+                let mut last_backoff_logged = 0u64;
                 let seed_candidates = [
                     "btcusdt@bestBidAsk",
                     "ethusdt@bestBidAsk",
@@ -343,16 +345,34 @@ async fn main() -> anyhow::Result<()> {
                         .is_ok_and(|s| s.duration >= std::time::Duration::from_secs(10));
                     match res {
                         Ok(stats) => {
-                            warn!(
-                                "binance_spot_sbe ws ended ({url}): frames={} binary_frames={} duration_ms={} backoff_secs={}",
-                                stats.frames,
-                                binary_frames,
-                                stats.duration.as_millis(),
-                                backoff_secs
-                            );
+                            ended_warn_count += 1;
+                            if ended_warn_count == 1
+                                || backoff_secs != last_backoff_logged
+                                || ended_warn_count % 10 == 0
+                            {
+                                warn!(
+                                    "binance_spot_sbe ws ended ({url}): frames={} binary_frames={} duration_ms={} backoff_secs={} restarts={}",
+                                    stats.frames,
+                                    binary_frames,
+                                    stats.duration.as_millis(),
+                                    backoff_secs,
+                                    ended_warn_count
+                                );
+                                last_backoff_logged = backoff_secs;
+                            }
                         }
                         Err(err) => {
-                            warn!("binance_spot_sbe ws ended ({url}): {err:#} backoff_secs={backoff_secs}");
+                            ended_warn_count += 1;
+                            if ended_warn_count == 1
+                                || backoff_secs != last_backoff_logged
+                                || ended_warn_count % 10 == 0
+                            {
+                                warn!(
+                                    "binance_spot_sbe ws ended ({url}): {err:#} backoff_secs={} restarts={}",
+                                    backoff_secs, ended_warn_count
+                                );
+                                last_backoff_logged = backoff_secs;
+                            }
                             if err_contains_http_status(&err, 400) {
                                 seed_idx = (seed_idx + 1) % seed_candidates.len();
                                 warn!(
@@ -683,6 +703,8 @@ fn spawn_binance_json(
     tokio::spawn(async move {
         let url = kind.ws_endpoint(&endpoint, &symbol);
         let mut backoff_secs = 1u64;
+        let mut ended_warn_count = 0u64;
+        let mut last_backoff_logged = 0u64;
         loop {
             let res = ws::client::run_ws_with_handler(&url, None, &[], |frame| {
                 let text = match frame {
@@ -706,14 +728,34 @@ fn spawn_binance_json(
                 .is_ok_and(|s| s.frames > 0 && s.duration >= std::time::Duration::from_secs(10));
             match res {
                 Ok(stats) => {
-                    warn!(
-                        "ws ended ({url}): frames={} duration_ms={} backoff_secs={}",
-                        stats.frames,
-                        stats.duration.as_millis(),
-                        backoff_secs
-                    );
+                    ended_warn_count += 1;
+                    if ended_warn_count == 1
+                        || backoff_secs != last_backoff_logged
+                        || ended_warn_count % 10 == 0
+                    {
+                        warn!(
+                            "ws ended ({url}): frames={} duration_ms={} backoff_secs={} restarts={}",
+                            stats.frames,
+                            stats.duration.as_millis(),
+                            backoff_secs,
+                            ended_warn_count
+                        );
+                        last_backoff_logged = backoff_secs;
+                    }
                 }
-                Err(err) => warn!("ws ended ({url}): {err:#} backoff_secs={backoff_secs}"),
+                Err(err) => {
+                    ended_warn_count += 1;
+                    if ended_warn_count == 1
+                        || backoff_secs != last_backoff_logged
+                        || ended_warn_count % 10 == 0
+                    {
+                        warn!(
+                            "ws ended ({url}): {err:#} backoff_secs={} restarts={}",
+                            backoff_secs, ended_warn_count
+                        );
+                        last_backoff_logged = backoff_secs;
+                    }
+                }
             }
             tokio::time::sleep(jittered_sleep_secs(backoff_secs)).await;
             backoff_secs = next_backoff_secs(backoff_secs, ok);
@@ -763,6 +805,8 @@ fn spawn_binance_json_combined(
             );
 
             let mut backoff_secs = 1u64;
+            let mut ended_warn_count = 0u64;
+            let mut last_backoff_logged = 0u64;
             loop {
                 let mut logged_first_event = false;
                 let res = ws::client::run_ws_with_handler(&url, None, &[], |frame| {
@@ -819,15 +863,33 @@ fn spawn_binance_json_combined(
                 });
                 match res {
                     Ok(stats) => {
-                        warn!(
-                            "combined ws ended ({url}): frames={} duration_ms={} backoff_secs={}",
-                            stats.frames,
-                            stats.duration.as_millis(),
-                            backoff_secs
-                        );
+                        ended_warn_count += 1;
+                        if ended_warn_count == 1
+                            || backoff_secs != last_backoff_logged
+                            || ended_warn_count % 10 == 0
+                        {
+                            warn!(
+                                "combined ws ended ({url}): frames={} duration_ms={} backoff_secs={} restarts={}",
+                                stats.frames,
+                                stats.duration.as_millis(),
+                                backoff_secs,
+                                ended_warn_count
+                            );
+                            last_backoff_logged = backoff_secs;
+                        }
                     }
                     Err(err) => {
-                        warn!("combined ws ended ({url}): {err:#} backoff_secs={backoff_secs}")
+                        ended_warn_count += 1;
+                        if ended_warn_count == 1
+                            || backoff_secs != last_backoff_logged
+                            || ended_warn_count % 10 == 0
+                        {
+                            warn!(
+                                "combined ws ended ({url}): {err:#} backoff_secs={} restarts={}",
+                                backoff_secs, ended_warn_count
+                            );
+                            last_backoff_logged = backoff_secs;
+                        }
                     }
                 }
                 tokio::time::sleep(jittered_sleep_secs(backoff_secs)).await;
