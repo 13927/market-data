@@ -2,5 +2,6 @@
 /data
 /config.toml
 /logs
+/samples
 /.run
 *.csv

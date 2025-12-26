@@ -652,10 +652,13 @@ fn handle_kucoin_text(
             ev.local_ts = local_ts;
             ev.time_str = format_time_str_ms(local_ts);
             ev.update_id = data.get("sequence").and_then(parse_u64_value);
-            ev.event_time = data
+            let trade_ts = data
                 .get("ts")
-                .and_then(|x| x.as_i64())
-                .or_else(|| data.get("time").and_then(|x| x.as_i64()));
+                .and_then(parse_u64_value)
+                .or_else(|| data.get("time").and_then(parse_u64_value))
+                .map(|v| normalize_epoch_to_ms(v as i64));
+            ev.event_time = trade_ts;
+            ev.trade_time = trade_ts;
             let side = data.get("side").and_then(|x| x.as_str()).unwrap_or("");
             let px = data
                 .get("price")
@@ -789,5 +792,36 @@ mod tests {
         assert!(matches!(ev.stream, Stream::SpotL5));
         assert_eq!(ev.bid1_px, Some(100.1));
         assert_eq!(ev.ask1_qty, Some(3.0));
+    }
+
+    #[test]
+    fn parse_trade_ts_ok() {
+        let topics = vec![(
+            "/market/match:BTC-USDT".to_string(),
+            Stream::SpotTrade,
+            "BTCUSDT".to_string(),
+        )];
+        let text = r#"{
+            "type":"message",
+            "topic":"/market/match:BTC-USDT",
+            "data":{
+                "sequence":"456",
+                "side":"buy",
+                "price":"100.5",
+                "size":"1.25",
+                "ts":1700000000200
+            }
+        }"#;
+        let (tx, rx) = unbounded();
+        handle_kucoin_text(text, &topics, &tx).unwrap();
+        let ev = rx.recv().unwrap();
+        assert_eq!(ev.exchange, "kucoin");
+        assert!(matches!(ev.stream, Stream::SpotTrade));
+        assert_eq!(ev.symbol, "BTCUSDT");
+        assert_eq!(ev.update_id, Some(456));
+        assert_eq!(ev.event_time, Some(1700000000200));
+        assert_eq!(ev.trade_time, Some(1700000000200));
+        assert_eq!(ev.ask_px, Some(100.5));
+        assert_eq!(ev.ask_qty, Some(1.25));
     }
 }

@@ -486,10 +486,13 @@ fn handle_text(
                 .and_then(parse_u64_value)
                 .or_else(|| data.get("sn").and_then(parse_u64_value))
                 .or_else(|| data.get("tradeId").and_then(parse_u64_value));
-            ev.event_time = data
+            let trade_ts = data
                 .get("ts")
-                .and_then(|x| x.as_i64())
-                .map(normalize_epoch_to_ms);
+                .and_then(parse_u64_value)
+                .or_else(|| data.get("time").and_then(parse_u64_value))
+                .map(|v| normalize_epoch_to_ms(v as i64));
+            ev.event_time = trade_ts;
+            ev.trade_time = trade_ts;
             let side = data.get("side").and_then(|x| x.as_str()).unwrap_or("");
             let px = data
                 .get("price")

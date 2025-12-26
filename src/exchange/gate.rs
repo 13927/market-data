@@ -420,16 +420,17 @@ fn handle_gate_snapshot(
         .map(|(_, stored)| stored.clone())
         .unwrap_or_else(|| sym.to_string());
 
-    let id = val.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-    if id == 0 {
-        return Ok(());
-    }
+    let id_opt = val
+        .get("id")
+        .and_then(|v| v.as_u64())
+        .or_else(|| val.get("last_update_id").and_then(|v| v.as_u64()))
+        ;
 
     let book = books.entry(sym.to_string()).or_insert_with(LocalOrderBook::new);
     // Reset book with snapshot
     book.bids.clear();
     book.asks.clear();
-    book.last_id = Some(id);
+    book.last_id = id_opt;
 
     let bids = val.get("bids");
     for (p, q) in parse_book_entries(bids) {
@@ -451,7 +452,8 @@ fn handle_gate_snapshot(
     );
     ev.local_ts = now_ms();
     ev.time_str = format_time_str_ms(ev.local_ts);
-    ev.update_id = Some(id);
+    ev.event_time = parse_ts_ms(val.get("current").or_else(|| val.get("update")));
+    ev.update_id = id_opt;
 
     // Bids
     let mut bids_iter = book.bids.iter().rev();
@@ -913,9 +915,9 @@ fn handle_gate_text(
                 .or_else(|| v.get("time")),
         );
         ev.update_id = if is_futures {
-            get_u64(result, &["id", "u", "U", "lastUpdateId"])
+            get_u64(result, &["id", "u", "U", "lastUpdateId", "current"])
         } else {
-            get_u64(result, &["lastUpdateId", "u", "U", "id"])
+            get_u64(result, &["lastUpdateId", "u", "U", "id", "current"])
         };
 
         // Bids: highest price first
@@ -994,12 +996,15 @@ fn emit_gate_trade(
     ev.local_ts = local_ts;
     ev.time_str = time_str.to_string();
     ev.update_id = get_u64(item, &["id", "trade_id", "match_id"]);
-    ev.event_time = parse_ts_ms(
+    let txn_ts = parse_ts_ms(
         item.get("create_time_ms")
             .or_else(|| item.get("t"))
             .or_else(|| item.get("time_ms"))
             .or_else(|| item.get("time")),
     );
+    let event_ts = parse_ts_ms(envelope.get("time"));
+    ev.trade_time = txn_ts;
+    ev.event_time = event_ts.or(txn_ts);
     let side = get_str(item, &["side", "S"]).unwrap_or("");
     let px = get_f64(item, &["price", "p"]);
     let qty = get_f64(item, &["amount", "q", "size"]);
@@ -1079,7 +1084,15 @@ fn parse_ts_ms(v: Option<&serde_json::Value>) -> Option<i64> {
     let n = if let Some(x) = v.as_i64() {
         x
     } else if let Some(s) = v.as_str() {
-        s.parse::<i64>().ok()?
+        if let Ok(x) = s.parse::<i64>() {
+            x
+        } else if let Ok(f) = s.parse::<f64>() {
+            f.round() as i64
+        } else {
+            return None;
+        }
+    } else if let Some(f) = v.as_f64() {
+        f.round() as i64
     } else {
         return None;
     };
@@ -1147,4 +1160,42 @@ fn normalize_gate_spot_endpoint(endpoint: &str) -> String {
 fn normalize_gate_futures_endpoint(endpoint: &str) -> String {
     // Gate futures WS endpoints are typically `wss://fx-ws.gateio.ws/v4/ws/usdt` (no trailing slash needed).
     endpoint.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::unbounded;
+
+    #[test]
+    fn parse_spot_trade_ts_ok() {
+        let symbols = vec![("BTC_USDT".to_string(), "BTCUSDT".to_string())];
+        let text = r#"{
+            "time":1700000000400,
+            "channel":"spot.trades",
+            "event":"update",
+            "result":[
+                {
+                    "currency_pair":"BTC_USDT",
+                    "side":"sell",
+                    "price":"100.2",
+                    "amount":"2.00",
+                    "t":1700000000300,
+                    "id":"789"
+                }
+            ]
+        }"#;
+        let (tx, rx) = unbounded();
+        let mut books = HashMap::new();
+        handle_gate_text("gate", false, text, &symbols, &tx, &mut books).unwrap();
+        let ev = rx.recv().unwrap();
+        assert_eq!(ev.exchange, "gate");
+        assert!(matches!(ev.stream, Stream::SpotTrade));
+        assert_eq!(ev.symbol, "BTCUSDT");
+        assert_eq!(ev.update_id, Some(789));
+        assert_eq!(ev.event_time, Some(1700000000400));
+        assert_eq!(ev.trade_time, Some(1700000000300));
+        assert_eq!(ev.bid_px, Some(100.2));
+        assert_eq!(ev.bid_qty, Some(2.0));
+    }
 }
