@@ -13,7 +13,7 @@ set -euo pipefail
 #   bash scripts/market-data-daemon.sh restart
 #
 # Optional env vars:
-#   RUST_LOG (default: info)
+#   RUST_LOG (default: warn)
 #   MARKET_DATA_BIN (default: ./target/release/market-data)
 #   MARKET_DATA_LOG (default: ./logs/market-data.log)
 #   MARKET_DATA_PID (default: ./.run/market-data.pid)
@@ -32,7 +32,7 @@ MARKET_DATA_BIN="${MARKET_DATA_BIN:-${ROOT_DIR}/target/release/market-data}"
 MARKET_DATA_LOG="${MARKET_DATA_LOG:-${LOG_DIR}/market-data.log}"
 MARKET_DATA_PID="${MARKET_DATA_PID:-${PID_DIR}/market-data.pid}"
 MARKET_DATA_LOCK="${MARKET_DATA_LOCK:-${PID_DIR}/market-data.lock}"
-RUST_LOG="${RUST_LOG:-info}"
+RUST_LOG="${RUST_LOG:-warn}"
 BUILD="${BUILD:-1}"
 LOG_KEEP="${LOG_KEEP:-20}"
 LOG_GZIP="${LOG_GZIP:-1}"

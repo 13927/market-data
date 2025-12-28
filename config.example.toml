@@ -47,6 +47,7 @@ futures_rest_endpoint = "https://api-futures.kucoin.com"
 symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT"]
 ticker = true
 l5 = true
+trade = true
 
 [gate]
 enabled = false
@@ -56,23 +57,24 @@ futures_endpoint = "wss://fx-ws.gateio.ws/v4/ws/usdt"
 symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "TRXUSDT"]
 spot_ticker = true
 spot_l5 = true
+spot_trade = true
 swap_ticker = true
 swap_l5 = true
+swap_trade = true
 
 [output]
 dir = "data"
-format = "parquet" # parquet | jsonl
+format = "parquet" # parquet | jsonl | csv
 bucket_minutes = 60 # 1 hour per file
 retention_hours = 24
 cleanup_interval_secs = 300
-# Parquet row-group max size. Keep this small for large symbol sets (hundreds of open files).
-parquet_batch_size = 2000
-# Per-symbol partitioning keeps one in-memory Arrow builder per open file.
-# For 3 exchanges × 200 symbols (~600 open files), use a smaller batch size to avoid OOM.
-parquet_record_batch_size = 256
-# Soft cap concurrently open parquet files (0 = unlimited).
-# If you require "no data loss", do NOT set this below your active file count (will cause heavy *_partN churn).
-parquet_max_open_files = 0
-# Optional: close files that have not received data recently (helps low-activity symbols).
-parquet_idle_close_secs = 300
+queue_capacity = 200000
+# Parquet row-group max size (default).
+parquet_batch_size = 50000
+# Per-symbol partitioning keeps one in-memory Arrow builder per open file (default).
+parquet_record_batch_size = 512
+# Soft cap concurrently open parquet files (default).
+parquet_max_open_files = 128
+# Optional: close files that have not received data recently (0 disables; default).
+parquet_idle_close_secs = 0
 parquet_zstd_level = 3
