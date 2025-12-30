@@ -447,13 +447,20 @@ async fn run_kucoin_public_ws_once(
         }
     }
 
-    // heartbeat (KuCoin expects text ping/pong, not just WS ping frames)
-    let ping_every_ms = (server.ping_interval_ms / 2).max(1000);
+    let ping_every_ms = server.ping_interval_ms.saturating_sub(500).max(1000);
     let ping_timeout_ms = server.ping_timeout_ms.max(1000);
     let mut ping = tokio::time::interval(Duration::from_millis(ping_every_ms));
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut watchdog = tokio::time::interval(Duration::from_millis(1000));
     watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_millis(0))
+            .subsec_nanos() as u64;
+        let max = (ping_every_ms / 4).max(1);
+        tokio::time::sleep(Duration::from_millis(nanos % max)).await;
+    }
 
     let started = std::time::Instant::now();
     let mut frames = 0u64;

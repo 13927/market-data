@@ -1,0 +1,14 @@
+[Unit]
+Description=Market Data Service
+After=network.target
+
+[Service]
+WorkingDirectory=/mnt/market_data
+Environment=RUST_LOG=warn
+ExecStart=/mnt/market_data/target/release/market-data
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -39,8 +39,8 @@ rest_endpoint = "https://api.kucoin.com"
 # KuCoin has strict control-message limits for subscribe/ping/pong.
 # These pacing knobs prevent `code=509 exceed max permits per second` when you subscribe many topics.
 subscribe_delay_ms = 100        # per-connection subscribe interval (used only when global_subscribe_delay_ms=0)
-conn_stagger_ms = 500           # stagger each WS connection start
-global_subscribe_delay_ms = 100 # global subscribe interval shared across spot+swap (recommended)
+conn_stagger_ms = 1000          # stagger each WS connection start
+global_subscribe_delay_ms = 200 # global subscribe interval shared across spot+swap (recommended)
 swap = true
 futures_rest_endpoint = "https://api-futures.kucoin.com"
 # Accepts either "BTC-USDT" or "BTCUSDT" (auto-normalized).

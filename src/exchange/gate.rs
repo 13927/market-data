@@ -541,19 +541,18 @@ async fn run_gate_spot_once(
     }
     if l5 {
         for (sym, _) in symbols {
-            // Gate Spot order_book_update payload: [symbol, interval]
-            // No limit parameter for spot.
+            let stream = format!("ob.{sym}.50");
             let msg = serde_json::json!({
                 "time": now_ms() / 1000,
-                "channel": "spot.order_book_update",
+                "channel": "spot.obu",
                 "event": "subscribe",
-                "payload": [sym, "100ms"]
+                "payload": [stream]
             });
 
             write
                 .send(Message::Text(msg.to_string()))
                 .await
-                .context("gate spot subscribe order_book")?;
+                .context("gate spot subscribe order_book_v2 (obu)")?;
             tokio::time::sleep(Duration::from_millis(GATE_SUBSCRIBE_DELAY_MS)).await;
         }
     }
@@ -731,9 +730,7 @@ async fn run_gate_futures_once(
                 "time": now_ms() / 1000,
                 "channel": "futures.order_book_update",
                 "event": "subscribe",
-                // Gate futures payload: [contract, frequency, level]
-                // frequency: "100ms", level: "5"
-                "payload": [sym, "100ms", "5"]
+                "payload": [sym, "20ms", "50"]
             });
             write
                 .send(Message::Text(msg.to_string()))
@@ -879,20 +876,29 @@ fn handle_gate_text(
         return Ok(());
     }
 
-    if channel.ends_with("order_book") || channel.ends_with("order_book_update") {
-        let sym = get_str(result, &["s", "currency_pair", "contract"]).or_else(|| {
+    if channel.ends_with("order_book") || channel.ends_with("order_book_update") || channel.ends_with("obu") {
+        let sym_opt = get_str(result, &["s", "currency_pair", "contract"]).or_else(|| {
             v.get("payload")
                 .and_then(|p| p.get(0))
                 .and_then(|x| x.as_str())
         });
-        let Some(sym) = sym else {
+        let Some(raw_sym) = sym_opt else {
             return Ok(());
+        };
+        let sym_owned: String = if raw_sym.starts_with("ob.") {
+            let s = &raw_sym[3..];
+            match s.rsplit_once('.') {
+                Some((pair, _level)) => pair.to_string(),
+                None => s.to_string(),
+            }
+        } else {
+            raw_sym.to_string()
         };
         let stored = symbols
             .iter()
-            .find(|(s, _)| s.eq_ignore_ascii_case(sym))
+            .find(|(s, _)| s.eq_ignore_ascii_case(&sym_owned))
             .map(|(_, stored)| stored.as_str())
-            .unwrap_or_else(|| sym);
+            .unwrap_or_else(|| sym_owned.as_str());
 
         let full = result.get("full").and_then(|x| x.as_bool()).unwrap_or(true);
         let book = books.entry(stored.to_string()).or_insert_with(LocalOrderBook::new);

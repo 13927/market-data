@@ -1,0 +1,11 @@
+[Unit]
+Description=Feishu Heartbeat Timer
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Unit=feishu-heartbeat.service
+
+[Install]
+WantedBy=timers.target
+

@@ -1,0 +1,12 @@
+[Unit]
+Description=Feishu Heartbeat
+
+[Service]
+Type=oneshot
+WorkingDirectory=/mnt/market_data
+EnvironmentFile=/mnt/market_data/feishu.env
+ExecStart=/usr/bin/bash /mnt/market_data/scripts/feishu_heartbeat.sh
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
