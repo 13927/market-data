@@ -1,5 +1,5 @@
 use std::time::Duration;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::Context;
 use futures_util::{SinkExt, StreamExt};
@@ -429,77 +429,7 @@ fn spawn_gate_futures_ws(
     Ok(handles)
 }
 
-fn handle_gate_snapshot(
-    exchange: &str,
-    is_futures: bool,
-    sym: &str,
-    val: serde_json::Value,
-    symbols: &[(String, String)],
-    sender: &crossbeam_channel::Sender<MarketEvent>,
-    books: &mut HashMap<String, LocalOrderBook>,
-) -> anyhow::Result<()> {
-    let stored_sym = symbols
-        .iter()
-        .find(|(s, _)| s == sym)
-        .map(|(_, stored)| stored.clone())
-        .unwrap_or_else(|| sym.to_string());
-
-    let id_opt = val
-        .get("id")
-        .and_then(|v| v.as_u64())
-        .or_else(|| val.get("last_update_id").and_then(|v| v.as_u64()))
-        ;
-
-    let book = books.entry(sym.to_string()).or_insert_with(LocalOrderBook::new);
-    // Reset book with snapshot
-    book.bids.clear();
-    book.asks.clear();
-    book.last_id = id_opt;
-
-    let bids = val.get("bids");
-    for (p, q) in parse_book_entries(bids) {
-        book.bids.insert(p.to_bits(), q);
-    }
-    let asks = val.get("asks");
-    for (p, q) in parse_book_entries(asks) {
-        book.asks.insert(p.to_bits(), q);
-    }
-
-    let mut ev = MarketEvent::new(
-        exchange,
-        if is_futures {
-            Stream::FutureL5
-        } else {
-            Stream::SpotL5
-        },
-        stored_sym,
-    );
-    ev.local_ts = now_ms();
-    ev.time_str = format_time_str_ms(ev.local_ts);
-    ev.event_time = parse_ts_ms(val.get("current").or_else(|| val.get("update")));
-    ev.update_id = id_opt;
-
-    // Bids
-    let mut bids_iter = book.bids.iter().rev();
-    if let Some((&p, &q)) = bids_iter.next() { ev.bid_px = Some(f64::from_bits(p)); ev.bid_qty = Some(q); }
-    if let Some((&p, &q)) = bids_iter.next() { ev.bid1_px = Some(f64::from_bits(p)); ev.bid1_qty = Some(q); }
-    if let Some((&p, &q)) = bids_iter.next() { ev.bid2_px = Some(f64::from_bits(p)); ev.bid2_qty = Some(q); }
-    if let Some((&p, &q)) = bids_iter.next() { ev.bid3_px = Some(f64::from_bits(p)); ev.bid3_qty = Some(q); }
-    if let Some((&p, &q)) = bids_iter.next() { ev.bid4_px = Some(f64::from_bits(p)); ev.bid4_qty = Some(q); }
-    if let Some((&p, &q)) = bids_iter.next() { ev.bid5_px = Some(f64::from_bits(p)); ev.bid5_qty = Some(q); }
-
-    // Asks
-    let mut asks_iter = book.asks.iter();
-    if let Some((&p, &q)) = asks_iter.next() { ev.ask_px = Some(f64::from_bits(p)); ev.ask_qty = Some(q); }
-    if let Some((&p, &q)) = asks_iter.next() { ev.ask1_px = Some(f64::from_bits(p)); ev.ask1_qty = Some(q); }
-    if let Some((&p, &q)) = asks_iter.next() { ev.ask2_px = Some(f64::from_bits(p)); ev.ask2_qty = Some(q); }
-    if let Some((&p, &q)) = asks_iter.next() { ev.ask3_px = Some(f64::from_bits(p)); ev.ask3_qty = Some(q); }
-    if let Some((&p, &q)) = asks_iter.next() { ev.ask4_px = Some(f64::from_bits(p)); ev.ask4_qty = Some(q); }
-    if let Some((&p, &q)) = asks_iter.next() { ev.ask5_px = Some(f64::from_bits(p)); ev.ask5_qty = Some(q); }
-
-    let _ = sender.try_send(ev);
-    Ok(())
-}
+// REST 快照处理已移除
 
 async fn run_gate_spot_once(
     endpoint: &str,
@@ -524,6 +454,7 @@ async fn run_gate_spot_once(
     let (mut write, mut read) = ws.split();
 
     // subscribe requests
+    let mut subscribed_obu: HashSet<String> = HashSet::new();
     if ticker {
         for (sym, _) in symbols {
             let msg = serde_json::json!({
@@ -554,6 +485,7 @@ async fn run_gate_spot_once(
                 .await
                 .context("gate spot subscribe order_book_v2 (obu)")?;
             tokio::time::sleep(Duration::from_millis(GATE_SUBSCRIBE_DELAY_MS)).await;
+            subscribed_obu.insert(stream);
         }
     }
     if trade {
@@ -577,38 +509,7 @@ async fn run_gate_spot_once(
     let mut watchdog = tokio::time::interval(Duration::from_secs(1));
     watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-    // Active Snapshot Pull (10s interval)
-    let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(100);
-    let snapshot_symbols: Vec<String> = symbols.iter().map(|(s, _)| s.clone()).collect();
-    tokio::spawn(async move {
-        let client = reqwest::Client::new();
-        // Initial snapshot immediately
-        let mut first = true;
-        loop {
-            if !first {
-                tokio::time::sleep(Duration::from_secs(10)).await;
-            }
-            first = false;
-
-            for sym in &snapshot_symbols {
-                let url = format!("{}/spot/order_book?currency_pair={}&limit=10", GATE_REST_BASE, sym);
-                match client.get(&url).send().await {
-                    Ok(resp) => {
-                        if let Ok(val) = resp.json::<serde_json::Value>().await {
-                            if snapshot_tx.send((sym.clone(), val)).await.is_err() {
-                                return; // Receiver closed
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("gate spot snapshot failed for {}: {}", sym, e);
-                    }
-                }
-                // Throttle to avoid hitting rate limits too hard (200/s allowed, we do ~20/s)
-                tokio::time::sleep(Duration::from_millis(50)).await; 
-            }
-        }
-    });
+    // REST 快照已取消
 
     let started = std::time::Instant::now();
     let mut frames = 0u64;
@@ -616,9 +517,6 @@ async fn run_gate_spot_once(
     let mut books = HashMap::new();
     loop {
         tokio::select! {
-            Some((sym, val)) = snapshot_rx.recv() => {
-                handle_gate_snapshot("gate", false, &sym, val, symbols, sender, &mut books)?;
-            }
             _ = ping.tick() => {
                 write.send(Message::Ping(Vec::new())).await.context("gate spot active ping")?;
             }
@@ -635,7 +533,28 @@ async fn run_gate_spot_once(
                 last_msg_ts = std::time::Instant::now();
                 match msg {
                     Message::Text(text) => {
-                        handle_gate_text("gate", false, &text, symbols, sender, &mut books)?;
+                        if let Some(resub) = handle_gate_text("gate", false, &text, symbols, sender, &mut books)? {
+                            if subscribed_obu.contains(&resub) {
+                                let un = serde_json::json!({
+                                    "time": now_ms() / 1000,
+                                    "channel": "spot.obu",
+                                    "event": "unsubscribe",
+                                    "payload": [resub]
+                                });
+                                write.send(Message::Text(un.to_string())).await.context("gate spot unsubscribe obu")?;
+                                tokio::time::sleep(Duration::from_millis(GATE_SUBSCRIBE_DELAY_MS)).await;
+                                subscribed_obu.remove(&resub);
+                            }
+                            let sub = serde_json::json!({
+                                "time": now_ms() / 1000,
+                                "channel": "spot.obu",
+                                "event": "subscribe",
+                                "payload": [resub]
+                            });
+                            write.send(Message::Text(sub.to_string())).await.context("gate spot resubscribe obu")?;
+                            tokio::time::sleep(Duration::from_millis(GATE_SUBSCRIBE_DELAY_MS)).await;
+                            subscribed_obu.insert(resub);
+                        }
                     }
                     Message::Ping(payload) => {
                         write.send(Message::Pong(payload)).await.context("gate spot pong")?;
@@ -675,39 +594,9 @@ async fn run_gate_futures_once(
     .context("gate futures connect: timeout")?
     .context("gate futures connect")?;
     let (mut write, mut read) = ws.split();
+    let mut subscribed_contracts: HashSet<String> = HashSet::new();
 
-    // Active Snapshot Pull (10s interval)
-    let (snapshot_tx, mut snapshot_rx) = tokio::sync::mpsc::channel(100);
-    let snapshot_symbols: Vec<String> = symbols.iter().map(|(s, _)| s.clone()).collect();
-    let settle = if endpoint.contains("usdc") { "usdc" } else { "usdt" };
-    
-    tokio::spawn(async move {
-        let client = reqwest::Client::new();
-        let mut first = true;
-        loop {
-            if !first {
-                tokio::time::sleep(Duration::from_secs(10)).await;
-            }
-            first = false;
-
-            for sym in &snapshot_symbols {
-                let url = format!("{}/futures/{}/order_book?contract={}&limit=10", GATE_REST_BASE, settle, sym);
-                match client.get(&url).send().await {
-                    Ok(resp) => {
-                        if let Ok(val) = resp.json::<serde_json::Value>().await {
-                            if snapshot_tx.send((sym.clone(), val)).await.is_err() {
-                                return;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("gate futures snapshot failed for {}: {}", sym, e);
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }
-    });
+    // REST 快照已取消
 
     if ticker {
         for (sym, _) in symbols {
@@ -726,17 +615,19 @@ async fn run_gate_futures_once(
     }
     if l5 {
         for (sym, _) in symbols {
+            let stream = format!("ob.{sym}.50");
             let msg = serde_json::json!({
                 "time": now_ms() / 1000,
-                "channel": "futures.order_book_update",
+                "channel": "futures.obu",
                 "event": "subscribe",
-                "payload": [sym, "20ms", "50"]
+                "payload": [stream]
             });
             write
                 .send(Message::Text(msg.to_string()))
                 .await
                 .context("gate futures subscribe order_book")?;
             tokio::time::sleep(Duration::from_millis(GATE_SUBSCRIBE_DELAY_MS)).await;
+            subscribed_contracts.insert(stream);
         }
     }
     if trade {
@@ -766,9 +657,6 @@ async fn run_gate_futures_once(
     let mut books = HashMap::new();
     loop {
         tokio::select! {
-            Some((sym, val)) = snapshot_rx.recv() => {
-                handle_gate_snapshot("gate", true, &sym, val, symbols, sender, &mut books)?;
-            }
             _ = ping.tick() => {
                 write
                     .send(Message::Ping(Vec::new())).await.context("gate futures active ping")?;
@@ -786,7 +674,28 @@ async fn run_gate_futures_once(
                 last_msg_ts = std::time::Instant::now();
                 match msg {
                     Message::Text(text) => {
-                        handle_gate_text("gate", true, &text, symbols, sender, &mut books)?;
+                        if let Some(resub) = handle_gate_text("gate", true, &text, symbols, sender, &mut books)? {
+                            if subscribed_contracts.contains(&resub) {
+                                let un = serde_json::json!({
+                                    "time": now_ms() / 1000,
+                                    "channel": "futures.obu",
+                                    "event": "unsubscribe",
+                                    "payload": [resub]
+                                });
+                                write.send(Message::Text(un.to_string())).await.context("gate futures unsubscribe obu")?;
+                                tokio::time::sleep(Duration::from_millis(GATE_SUBSCRIBE_DELAY_MS)).await;
+                                subscribed_contracts.remove(&resub);
+                            }
+                            let sub = serde_json::json!({
+                                "time": now_ms() / 1000,
+                                "channel": "futures.obu",
+                                "event": "subscribe",
+                                "payload": [resub]
+                            });
+                            write.send(Message::Text(sub.to_string())).await.context("gate futures resubscribe obu")?;
+                            tokio::time::sleep(Duration::from_millis(GATE_SUBSCRIBE_DELAY_MS)).await;
+                            subscribed_contracts.insert(resub);
+                        }
                     }
                     Message::Ping(payload) => {
                         write.send(Message::Pong(payload)).await.context("gate futures pong")?;
@@ -808,10 +717,10 @@ fn handle_gate_text(
     symbols: &[(String, String)],
     sender: &crossbeam_channel::Sender<MarketEvent>,
     books: &mut HashMap<String, LocalOrderBook>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<String>> {
     let v: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(None),
     };
     let event = v.get("event").and_then(|x| x.as_str()).unwrap_or("");
     // Gate order book snapshots use `event=all`, while other streams often use `event=update`.
@@ -824,7 +733,7 @@ fn handle_gate_text(
         if event == "error" || status == Some("fail") || v.get("error").is_some() {
             warn!("gate ws non-update: {}", truncate_for_log(text, 512));
         }
-        return Ok(());
+        return Ok(None);
     }
     let channel = v.get("channel").and_then(|x| x.as_str()).unwrap_or("");
     let result = v.get("result").unwrap_or(&serde_json::Value::Null);
@@ -839,7 +748,7 @@ fn handle_gate_text(
                 .and_then(|x| x.as_str())
         });
         let Some(sym) = sym else {
-            return Ok(());
+            return Ok(None);
         };
         let stored = symbols
             .iter()
@@ -873,7 +782,7 @@ fn handle_gate_text(
         if sender.try_send(ev).is_err() {
             crate::util::metrics::inc_dropped_events(1);
         }
-        return Ok(());
+        return Ok(None);
     }
 
     if channel.ends_with("order_book") || channel.ends_with("order_book_update") || channel.ends_with("obu") {
@@ -883,7 +792,7 @@ fn handle_gate_text(
                 .and_then(|x| x.as_str())
         });
         let Some(raw_sym) = sym_opt else {
-            return Ok(());
+            return Ok(None);
         };
         let sym_owned: String = if raw_sym.starts_with("ob.") {
             let s = &raw_sym[3..];
@@ -900,12 +809,46 @@ fn handle_gate_text(
             .map(|(_, stored)| stored.as_str())
             .unwrap_or_else(|| sym_owned.as_str());
 
-        let full = result.get("full").and_then(|x| x.as_bool()).unwrap_or(true);
+        let full = result.get("full").and_then(|x| x.as_bool()).unwrap_or(false);
         let book = books.entry(stored.to_string()).or_insert_with(LocalOrderBook::new);
+        let start_id = get_u64(result, &["U"]);
+        let end_id = if is_futures {
+            get_u64(result, &["u", "id", "lastUpdateId", "current"])
+        } else {
+            get_u64(result, &["u", "lastUpdateId", "id", "current"])
+        };
 
         if full {
             book.bids.clear();
             book.asks.clear();
+            if let Some(eid) = end_id {
+                info!("gate obu full: symbol={} end_id={}", stored, eid);
+            } else {
+                info!("gate obu full: symbol={} end_id=(none)", stored);
+            }
+        } else {
+            match (book.last_id, start_id) {
+                (Some(prev), Some(start)) if start == prev + 1 => {
+                    info!(
+                        "gate obu inc: symbol={} U={} u={} last_id={} ok",
+                        stored,
+                        start,
+                        end_id.unwrap_or(0),
+                        prev
+                    );
+                }
+                _ => {
+                    book.bids.clear();
+                    book.asks.clear();
+                    book.last_id = None;
+                    let resub_payload = format!("ob.{sym_owned}.50");
+                    warn!(
+                        "gate obu break: symbol={} U={:?} last_id={:?} -> resub {:?}",
+                        stored, start_id, book.last_id, resub_payload
+                    );
+                    return Ok(Some(resub_payload));
+                }
+            }
         }
 
         let bids = result.get("bids").or_else(|| result.get("b"));
@@ -924,6 +867,9 @@ fn handle_gate_text(
             } else {
                 book.asks.insert(p.to_bits(), q);
             }
+        }
+        if let Some(id) = end_id {
+            book.last_id = Some(id);
         }
 
         let mut ev = MarketEvent::new(
@@ -970,7 +916,7 @@ fn handle_gate_text(
         if sender.try_send(ev).is_err() {
             crate::util::metrics::inc_dropped_events(1);
         }
-        return Ok(());
+        return Ok(None);
     }
 
     if channel.ends_with("trades") {
@@ -978,14 +924,14 @@ fn handle_gate_text(
             for item in arr {
                 emit_gate_trade(exchange, is_futures, item, &v, symbols, sender, local_ts, &time_str)?;
             }
-            return Ok(());
+            return Ok(None);
         } else {
             emit_gate_trade(exchange, is_futures, result, &v, symbols, sender, local_ts, &time_str)?;
-            return Ok(());
+            return Ok(None);
         }
     }
 
-    Ok(())
+    Ok(None)
 }
 
 fn emit_gate_trade(
@@ -1226,5 +1172,89 @@ mod tests {
         assert_eq!(ev.trade_time, Some(1700000000300));
         assert_eq!(ev.bid_px, Some(100.2));
         assert_eq!(ev.bid_qty, Some(2.0));
+    }
+
+    #[test]
+    fn spot_obu_incremental_continuous_ok() {
+        let symbols = vec![("BTC_USDT".to_string(), "BTCUSDT".to_string())];
+        let (tx, rx) = unbounded();
+        let mut books = HashMap::new();
+        let full = r#"{
+            "time":1700000000000,
+            "channel":"spot.obu",
+            "event":"update",
+            "result":{
+                "s":"ob.BTC_USDT.50",
+                "full":true,
+                "u":100,
+                "bids":[["100","1.0"]],
+                "asks":[["101","2.0"]]
+            }
+        }"#;
+        let resub = handle_gate_text("gate", false, full, &symbols, &tx, &mut books).unwrap();
+        assert!(resub.is_none());
+        let ev_full = rx.recv().unwrap();
+        assert!(matches!(ev_full.stream, Stream::SpotL5));
+        assert_eq!(ev_full.symbol, "BTCUSDT");
+        assert_eq!(ev_full.update_id, Some(100));
+        assert_eq!(ev_full.bid_px, Some(100.0));
+        assert_eq!(ev_full.ask_px, Some(101.0));
+        let inc = r#"{
+            "time":1700000000100,
+            "channel":"spot.obu",
+            "event":"update",
+            "result":{
+                "s":"ob.BTC_USDT.50",
+                "U":101,
+                "u":102,
+                "b":[["100","0"],["99","1.5"]],
+                "a":[["101","3.0"]]
+            }
+        }"#;
+        let resub2 = handle_gate_text("gate", false, inc, &symbols, &tx, &mut books).unwrap();
+        assert!(resub2.is_none());
+        let ev_inc = rx.recv().unwrap();
+        assert!(matches!(ev_inc.stream, Stream::SpotL5));
+        assert_eq!(ev_inc.symbol, "BTCUSDT");
+        assert_eq!(ev_inc.update_id, Some(102));
+        assert_eq!(ev_inc.bid_px, Some(99.0));
+        assert_eq!(ev_inc.bid_qty, Some(1.5));
+        assert_eq!(ev_inc.ask_px, Some(101.0));
+        assert_eq!(ev_inc.ask_qty, Some(3.0));
+    }
+
+    #[test]
+    fn spot_obu_incremental_break_triggers_resub() {
+        let symbols = vec![("BTC_USDT".to_string(), "BTCUSDT".to_string())];
+        let (tx, _rx) = unbounded();
+        let mut books = HashMap::new();
+        let full = r#"{
+            "time":1700000000000,
+            "channel":"spot.obu",
+            "event":"update",
+            "result":{
+                "s":"ob.BTC_USDT.50",
+                "full":true,
+                "u":100,
+                "bids":[["100","1.0"]],
+                "asks":[["101","2.0"]]
+            }
+        }"#;
+        let resub = handle_gate_text("gate", false, full, &symbols, &tx, &mut books).unwrap();
+        assert!(resub.is_none());
+        let break_inc = r#"{
+            "time":1700000000200,
+            "channel":"spot.obu",
+            "event":"update",
+            "result":{
+                "s":"ob.BTC_USDT.50",
+                "U":150,
+                "u":151,
+                "b":[["100","0"]],
+                "a":[["101","1.0"]]
+            }
+        }"#;
+        let resub2 = handle_gate_text("gate", false, break_inc, &symbols, &tx, &mut books).unwrap();
+        assert_eq!(resub2, Some("ob.BTC_USDT.50".to_string()));
     }
 }
