@@ -34,7 +34,7 @@ if [[ -n "${main_pid}" ]]; then
     vsz_mb="$(awk -v v="${vsz_kb:-0}" 'BEGIN{printf "%.1f", v/1024}')"
   fi
   if [[ -d "/proc/${main_pid}/fd" ]]; then
-    fd_cnt="$(ls -U "/proc/${main_pid}/fd" 2>/dev/null | wc -l | tr -d ' ')"
+    fd_cnt="$(ls -U "/proc/${main_pid}/fd" 2>/dev/null | wc -l | tr -d ' ' || echo "?")"
   fi
   if [[ -f "/proc/${main_pid}/limits" ]]; then
     nofile_lim="$(awk '/Max open files/ {print $4}' "/proc/${main_pid}/limits" 2>/dev/null | tail -n1)"
@@ -59,13 +59,78 @@ disk_used=""
 disk_avail=""
 disk_usep=""
 read -r _ disk_size disk_used disk_avail disk_usep _ < <(df -h /mnt/market_data 2>/dev/null | awk 'NR==2{print $1" "$2" "$3" "$4" "$5" "$6}')
-text="$MSG
-host=${host} time=${ts}
-service=${service} active=${active}
-pid=${main_pid:-unknown}
-cpu=${cpu_pct:-?}% mem=${mem_pct:-?}% rss=${rss_mb:-?}MB vsz=${vsz_mb:-?}MB fd=${fd_cnt:-?} nofile=${nofile_lim:-?}
-loadavg=${loadavg:-?}
-mem_total=${mem_total:-?}MB mem_used=${mem_used:-?}MB mem_avail=${mem_avail:-?}MB
-disk(/mnt/market_data) size=${disk_size:-?} used=${disk_used:-?} avail=${disk_avail:-?} use%=${disk_usep:-?}"
-json_text="$(printf "%s" "${text}" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a;N;$!ba;s/\n/\\n/g')"
-curl -sS -o /dev/null -X POST "${WEBHOOK}" -H "Content-Type: application/json" -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"${json_text}\"}}"
+
+# Prepare variables for JSON
+pid="${main_pid:-unknown}"
+cpu="${cpu_pct:-?}"
+mem="${mem_pct:-?}"
+rss="${rss_mb:-?}"
+vsz="${vsz_mb:-?}"
+fd="${fd_cnt:-?}"
+load="${loadavg:-?}"
+mem_stats="${mem_used:-?}/${mem_total:-?}MB (Avail: ${mem_avail:-?}MB)"
+disk_stats="${disk_used:-?}/${disk_size:-?} (${disk_usep:-?}) (Avail: ${disk_avail:-?})"
+
+# Determine color based on service status or message content
+HEADER_COLOR="blue"
+if [[ "$active" != "active" ]]; then
+    HEADER_COLOR="red"
+elif [[ "$MSG" =~ "Error" ]] || [[ "$MSG" =~ "Failed" ]] || [[ "$MSG" =~ "异常" ]]; then
+    HEADER_COLOR="red"
+fi
+
+# Send interactive card
+jq -n \
+  --arg msg "$MSG" \
+  --arg host "$host" \
+  --arg ts "$ts" \
+  --arg active "$active" \
+  --arg pid "$pid" \
+  --arg cpu "$cpu" \
+  --arg mem "$mem" \
+  --arg rss "$rss" \
+  --arg fd "$fd" \
+  --arg load "$load" \
+  --arg mem_stats "$mem_stats" \
+  --arg disk_stats "$disk_stats" \
+  --arg color "$HEADER_COLOR" \
+  '{
+    msg_type: "interactive",
+    card: {
+      header: {
+        template: $color,
+        title: {
+          content: $msg,
+          tag: "plain_text"
+        }
+      },
+      elements: [
+        {
+          tag: "div",
+          fields: [
+            { is_short: true, text: { tag: "lark_md", content: ("**Host:**\n" + $host) } },
+            { is_short: true, text: { tag: "lark_md", content: ("**Service:**\n" + $active) } },
+            { is_short: true, text: { tag: "lark_md", content: ("**PID:**\n" + $pid) } },
+            { is_short: true, text: { tag: "lark_md", content: ("**Time:**\n" + $ts) } }
+          ]
+        },
+        { tag: "hr" },
+        {
+          tag: "div",
+          fields: [
+            { is_short: true, text: { tag: "lark_md", content: ("**CPU:** " + $cpu + "%") } },
+            { is_short: true, text: { tag: "lark_md", content: ("**Mem:** " + $mem + "% (" + $rss + "MB)") } },
+            { is_short: true, text: { tag: "lark_md", content: ("**Load:** " + $load) } },
+            { is_short: true, text: { tag: "lark_md", content: ("**FD:** " + $fd) } }
+          ]
+        },
+        {
+          tag: "div",
+          text: {
+             tag: "lark_md",
+             content: ("**System Mem:** " + $mem_stats + "\n**Disk:** " + $disk_stats)
+          }
+        }
+      ]
+    }
+  }' | curl -sS -X POST "${WEBHOOK}" -H "Content-Type: application/json" -d @-
