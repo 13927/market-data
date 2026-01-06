@@ -354,7 +354,7 @@ pub async fn spawn_kucoin_public_ws(
     }
 
     // KuCoin has per-connection subscription limits; keep conservative.
-    const TOPICS_PER_CONN: usize = 100;
+    const TOPICS_PER_CONN: usize = 300;
     let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     for (idx, chunk) in topics.chunks(TOPICS_PER_CONN).enumerate() {
         let cfg = cfg.clone();

@@ -278,12 +278,19 @@ async fn run_kucoin_futures_ws_once(
     let (mut write, mut read) = ws.split();
 
     // subscribe
-    for (i, (topic, _stream, _symbol)) in topics.iter().enumerate() {
-        let id = format!("sub-{i}-{connect_id}");
+    // KuCoin supports batch subscription (max 100 topics per request).
+    for (batch_idx, chunk) in topics.chunks(100).enumerate() {
+        let id = format!("sub-{batch_idx}-{connect_id}");
+        let topic_str = chunk
+            .iter()
+            .map(|(t, _, _)| t.as_str())
+            .collect::<Vec<&str>>()
+            .join(",");
+
         let msg = serde_json::json!({
             "id": id,
             "type": "subscribe",
-            "topic": topic,
+            "topic": topic_str,
             "privateChannel": false,
             "response": true
         });
@@ -294,6 +301,8 @@ async fn run_kucoin_futures_ws_once(
             .send(Message::Text(msg.to_string()))
             .await
             .context("kucoin_futures send subscribe")?;
+        // Avoid bursts that can trigger server-side throttles. When a global pacer is used, this
+        // per-connection delay is redundant and intentionally skipped.
         if pacer.is_none() && cfg.subscribe_delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(cfg.subscribe_delay_ms)).await;
         }
