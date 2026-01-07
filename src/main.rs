@@ -579,6 +579,23 @@ async fn main() -> anyhow::Result<()> {
     let parquet_max_open_files = cfg.output.parquet_max_open_files;
     let parquet_idle_close_secs = cfg.output.parquet_idle_close_secs;
     let parquet_zstd_level = cfg.output.parquet_zstd_level;
+    {
+        let bucket_ms = bucket_minutes.max(1) * 60_000;
+        let cutoff_ms = chrono::Utc::now().timestamp_millis()
+            - retention_hours * 3_600_000
+            - bucket_ms;
+        match writer::rollover::delete_older_than(std::path::Path::new(&output_dir), cutoff_ms) {
+            Ok(deleted) => {
+                info!(
+                    "startup cleanup: dir={} deleted_files={} cutoff_ms={}",
+                    output_dir, deleted, cutoff_ms
+                )
+            }
+            Err(err) => {
+                warn!("startup cleanup failed: {err:#}");
+            }
+        }
+    }
     let writer_handle = std::thread::spawn(move || match format {
         config::OutputFormat::Parquet => {
             let mut w = writer::parquet::ParquetFileWriter::new(

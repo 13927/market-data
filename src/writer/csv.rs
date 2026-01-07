@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -40,7 +40,8 @@ pub struct CsvFileWriter {
     writers: HashMap<FileKey, WriterEntry>,
     write_count: u64,
 
-    conversion_tx: Sender<PathBuf>,
+    conversion_tx: Option<Sender<PathBuf>>,
+    conversion_thread: Option<JoinHandle<()>>,
 }
 
 impl CsvFileWriter {
@@ -52,13 +53,14 @@ impl CsvFileWriter {
     ) -> anyhow::Result<Self> {
         let (tx, rx) = unbounded::<PathBuf>();
 
-        thread::spawn(move || {
+        let handle = thread::spawn(move || {
             info!("CSV to Parquet conversion thread started");
             while let Ok(path) = rx.recv() {
                 if let Err(e) = convert_csv_to_parquet(&path) {
                     error!("Failed to convert {:?} to parquet: {:?}", path, e);
                 }
             }
+            info!("CSV to Parquet conversion thread exited");
         });
 
         Ok(Self {
@@ -73,7 +75,8 @@ impl CsvFileWriter {
             last_report: Instant::now(),
             writers: HashMap::new(),
             write_count: 0,
-            conversion_tx: tx,
+            conversion_tx: Some(tx),
+            conversion_thread: Some(handle),
         })
     }
 
@@ -157,7 +160,9 @@ impl CsvFileWriter {
                 drop(entry); // Closes file
 
                 // Submit for conversion
-                let _ = self.conversion_tx.send(path);
+                if let Some(tx) = &self.conversion_tx {
+                    let _ = tx.send(path);
+                }
             }
         }
 
@@ -170,9 +175,25 @@ impl CsvFileWriter {
     pub fn close_all(&mut self) -> anyhow::Result<()> {
         for (_, mut entry) in self.writers.drain() {
             entry.writer.flush()?;
-            let _ = self.conversion_tx.send(entry.file_path);
+            if let Some(tx) = &self.conversion_tx {
+                let _ = tx.send(entry.file_path);
+            }
         }
         self.maybe_cleanup()?;
+
+        // Drop sender to signal EOF to conversion thread
+        self.conversion_tx = None;
+
+        // Wait for conversion thread to finish
+        if let Some(handle) = self.conversion_thread.take() {
+            info!("Waiting for CSV conversion thread to finish...");
+            if let Err(e) = handle.join() {
+                error!("Conversion thread panicked: {:?}", e);
+            } else {
+                info!("CSV conversion thread finished successfully");
+            }
+        }
+
         Ok(())
     }
 
@@ -192,7 +213,9 @@ impl CsvFileWriter {
 fn convert_csv_to_parquet(csv_path: &Path) -> anyhow::Result<()> {
     let parquet_path = csv_path.with_extension("parquet");
     if parquet_path.exists() {
-        // Already converted?
+        // Parquet already存在，删除冗余CSV以保持单一事实来源
+        fs::remove_file(csv_path)?;
+        debug!("Parquet exists; deleted CSV {:?}", csv_path);
         return Ok(());
     }
 

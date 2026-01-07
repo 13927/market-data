@@ -27,7 +27,7 @@ pub fn delete_older_than(dir: &Path, cutoff_epoch_ms: i64) -> anyhow::Result<u64
             }
 
             let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-            if ext != "parquet" && ext != "jsonl" {
+            if ext != "parquet" && ext != "jsonl" && ext != "csv" {
                 continue;
             }
 
