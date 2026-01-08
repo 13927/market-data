@@ -482,7 +482,7 @@ fn default_output_queue_capacity() -> usize {
 }
 
 fn default_output_parquet_batch_size() -> usize {
-    50_000
+    20_000
 }
 
 fn default_output_parquet_record_batch_size() -> usize {
@@ -493,9 +493,7 @@ fn default_output_parquet_record_batch_size() -> usize {
 }
 
 fn default_output_parquet_max_open_files() -> usize {
-    // The writer keeps one RecordBatch builder and one ArrowWriter per open file.
-    // With 3 exchanges * 200 symbols, open files can exceed 600 and explode memory on small boxes.
-    128
+    2
 }
 
 fn default_output_parquet_idle_close_secs() -> u64 {

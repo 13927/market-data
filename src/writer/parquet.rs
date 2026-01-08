@@ -1,5 +1,4 @@
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, create_dir_all, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -73,6 +72,8 @@ pub struct ParquetFileWriter {
     last_dropped_reported: u64,
     evicted_files_total: u64,
     open_files_soft_limit_exceeded_total: u64,
+    buffers: HashMap<FileKey, Vec<MarketEvent>>,
+    pending: VecDeque<FileKey>,
 }
 
 impl ParquetFileWriter {
@@ -147,118 +148,31 @@ impl ParquetFileWriter {
             last_dropped_reported: 0,
             evicted_files_total: 0,
             open_files_soft_limit_exceeded_total: 0,
+            buffers: HashMap::new(),
+            pending: VecDeque::new(),
         })
     }
 
     pub fn write_event(&mut self, ev: &MarketEvent) -> anyhow::Result<()> {
-        self.write_count += 1;
+        self.write_count = self.write_count.saturating_add(1);
         let bucket_id = bucket_id(ev.local_ts, self.bucket_minutes);
-        let time_part = bucket_time_str(ev.local_ts, self.bucket_minutes);
-
-        let stream = stream_as_str(ev);
-        let event_ts = ev.event_time;
-        let transaction_ts = ev.trade_time;
-        let lag_ms = event_ts
-            .map(|ts| ev.local_ts.saturating_sub(ts))
-            .or_else(|| transaction_ts.map(|ts| ev.local_ts.saturating_sub(ts)));
-
-        let delta_key = DeltaKey {
+        let key = FileKey {
             exchange: ev.exchange.clone(),
             symbol: ev.symbol.clone(),
-            stream,
+            bucket_id,
         };
-        let ts_from_last_ms = match self.last_local_ts.get(&delta_key) {
-            Some(prev) => ev.local_ts.saturating_sub(*prev),
-            None => 0,
-        };
-        self.last_local_ts.insert(delta_key, ev.local_ts);
-
-        {
-            let key = FileKey {
-                exchange: ev.exchange.clone(),
-                symbol: ev.symbol.clone(),
-                bucket_id,
-            };
-
-            // When a symbol crosses into a new bucket, proactively finalize any older bucket writer
-            // for that (exchange, symbol). This avoids a brief "double-open" spike at the bucket
-            // boundary (old bucket still open until maintenance tick) across large symbol sets.
-            if !self.writers.contains_key(&key) {
-                self.close_other_buckets_for_symbol(&key.exchange, &key.symbol, bucket_id)?;
-            }
-
-            // Memory safety: one open Arrow/Parquet writer + RecordBatch builder per file.
-            // With per-symbol partitioning this can easily be hundreds of files and can OOM.
-            // When opening a new file, try to evict old/idle writers to stay under the cap.
-            //
-            // IMPORTANT: `max_open_files` is a *soft* cap. If all writers are "hot" (recently
-            // written), evicting will thrash (open/close per tick), explode `_partN` counts,
-            // peg CPU, and still not guarantee lower memory. In that case, we prefer to exceed
-            // the cap and rely on smaller row groups / record batches to keep memory bounded.
-            if !self.writers.contains_key(&key) {
-                self.evict_to_limit(Instant::now())?;
-            }
-
-            let entry = match self.writers.entry(key.clone()) {
-                Entry::Occupied(e) => e.into_mut(),
-                Entry::Vacant(e) => {
-                    let symbol_dir = exchange_symbol_dir(&self.dir, &key.exchange, &key.symbol)
-                        .context("create exchange/symbol dir")?;
-                    let (final_path, inprogress_path, file) = open_new_inprogress_file(
-                        &symbol_dir,
-                        &key.exchange,
-                        &key.symbol,
-                        &time_part,
-                        "parquet",
-                    )?;
-                    info!(
-                        "open parquet: exchange={} symbol={} bucket={} file={}",
-                        key.exchange,
-                        key.symbol,
-                        time_part,
-                        final_path.display()
-                    );
-                    let writer = ArrowWriter::try_new(
-                        BufWriter::with_capacity(BUF_WRITER_CAPACITY_BYTES, file),
-                        event_schema(),
-                        Some(self.props.clone()),
-                    )
-                    .context("create ArrowWriter")?;
-                    let now = Instant::now();
-                    e.insert(WriterEntry {
-                        writer,
-                        builder: EventBatchBuilder::new(self.record_batch_size),
-                        last_write_bucket_id: bucket_id,
-                        last_write_at: now,
-                        final_path,
-                        inprogress_path,
-                        dirty: false,
-                        last_flush: now,
-                    })
-                }
-            };
-
-            entry.last_write_bucket_id = bucket_id;
-            entry.last_write_at = Instant::now();
-            entry.builder.push(
-                ev,
-                stream,
-                lag_ms,
-                ts_from_last_ms,
-                event_ts,
-                transaction_ts,
-            );
-            if entry.builder.len() >= self.record_batch_size {
-                Self::flush_entry(entry)?;
-            }
+        let buf = self.buffers.entry(key.clone()).or_insert_with(Vec::new);
+        buf.push(ev.clone());
+        if buf.len() >= self.record_batch_size {
+            self.pending.push_back(key);
         }
-
         self.maybe_cleanup()?;
         Ok(())
     }
 
     pub fn maintenance_tick(&mut self, queue_len: usize) -> anyhow::Result<()> {
         self.last_queue_len = queue_len;
+        self.process_pending()?;
         let current_bucket_id = bucket_id(time_now_ms(), self.bucket_minutes);
         self.close_stale(current_bucket_id)?;
         self.close_idle()?;
@@ -270,6 +184,104 @@ impl ParquetFileWriter {
 
     pub fn close_all(&mut self) -> anyhow::Result<()> {
         self.close_stale(i64::MAX)
+    }
+
+    fn process_pending(&mut self) -> anyhow::Result<()> {
+        let mut processed = 0usize;
+        let max_batches_per_tick = 64usize;
+        let now = Instant::now();
+        while processed < max_batches_per_tick {
+            let key = match self.pending.pop_front() {
+                Some(k) => k,
+                None => break,
+            };
+            let mut buf = match self.buffers.remove(&key) {
+                Some(b) if !b.is_empty() => b,
+                _ => continue,
+            };
+            if !self.writers.contains_key(&key) {
+                self.close_other_buckets_for_symbol(&key.exchange, &key.symbol, key.bucket_id)?;
+                self.evict_to_limit(now)?;
+                let symbol_dir = exchange_symbol_dir(&self.dir, &key.exchange, &key.symbol)
+                    .context("create exchange/symbol dir")?;
+                let first_ev = match buf.first() {
+                    Some(ev) => ev,
+                    None => continue,
+                };
+                let time_part = bucket_time_str(first_ev.local_ts, self.bucket_minutes);
+                let (final_path, inprogress_path, file) = open_new_inprogress_file(
+                    &symbol_dir,
+                    &key.exchange,
+                    &key.symbol,
+                    &time_part,
+                    "parquet",
+                )?;
+                info!(
+                    "open parquet: exchange={} symbol={} bucket={} file={}",
+                    key.exchange,
+                    key.symbol,
+                    time_part,
+                    final_path.display()
+                );
+                let writer = ArrowWriter::try_new(
+                    BufWriter::with_capacity(BUF_WRITER_CAPACITY_BYTES, file),
+                    event_schema(),
+                    Some(self.props.clone()),
+                )
+                .context("create ArrowWriter")?;
+                let now_entry = Instant::now();
+                self.writers.insert(
+                    key.clone(),
+                    WriterEntry {
+                        writer,
+                        builder: EventBatchBuilder::new(self.record_batch_size),
+                        last_write_bucket_id: key.bucket_id,
+                        last_write_at: now_entry,
+                        final_path,
+                        inprogress_path,
+                        dirty: false,
+                        last_flush: now_entry,
+                    },
+                );
+            }
+            let entry = match self.writers.get_mut(&key) {
+                Some(e) => e,
+                None => continue,
+            };
+            for ev in buf.drain(..) {
+                let stream = stream_as_str(&ev);
+                let event_ts = ev.event_time;
+                let transaction_ts = ev.trade_time;
+                let lag_ms = event_ts
+                    .map(|ts| ev.local_ts.saturating_sub(ts))
+                    .or_else(|| transaction_ts.map(|ts| ev.local_ts.saturating_sub(ts)));
+                let delta_key = DeltaKey {
+                    exchange: ev.exchange.clone(),
+                    symbol: ev.symbol.clone(),
+                    stream,
+                };
+                let ts_from_last_ms = match self.last_local_ts.get(&delta_key) {
+                    Some(prev) => ev.local_ts.saturating_sub(*prev),
+                    None => 0,
+                };
+                self.last_local_ts.insert(delta_key, ev.local_ts);
+                entry.last_write_bucket_id = key.bucket_id;
+                entry.last_write_at = Instant::now();
+                entry.builder.push(
+                    &ev,
+                    stream,
+                    lag_ms,
+                    ts_from_last_ms,
+                    event_ts,
+                    transaction_ts,
+                );
+                if entry.builder.len() >= self.record_batch_size {
+                    Self::flush_entry(entry)?;
+                }
+            }
+            processed += 1;
+        }
+        Ok(())
     }
 
     fn close_stale(&mut self, current_bucket_id: i64) -> anyhow::Result<()> {
@@ -345,18 +357,29 @@ impl ParquetFileWriter {
             return Ok(());
         }
 
-        // We are about to open a new writer; try to make room for it by evicting only writers
-        // that have been idle long enough. This avoids pathological thrash when many symbols are
-        // active in the same hour (all writers are hot).
         let min_evict_age = self.idle_close.unwrap_or_else(|| Duration::from_secs(60));
         let mut to_evict = self.writers.len().saturating_sub(self.max_open_files - 1);
         while to_evict > 0 && !self.writers.is_empty() {
             let mut oldest_key: Option<FileKey> = None;
             let mut oldest_at: Option<Instant> = None;
+            let mut fallback_key: Option<FileKey> = None;
+            let mut fallback_at: Option<Instant> = None;
             for (k, v) in self.writers.iter() {
                 let age = now
                     .checked_duration_since(v.last_write_at)
                     .unwrap_or_else(|| Duration::from_secs(0));
+                match fallback_at {
+                    None => {
+                        fallback_at = Some(v.last_write_at);
+                        fallback_key = Some(k.clone());
+                    }
+                    Some(at) => {
+                        if v.last_write_at < at {
+                            fallback_at = Some(v.last_write_at);
+                            fallback_key = Some(k.clone());
+                        }
+                    }
+                }
                 if age < min_evict_age {
                     continue;
                 }
@@ -374,22 +397,27 @@ impl ParquetFileWriter {
                 }
             }
 
-            let Some(key) = oldest_key else {
-                // Nothing is old/idle enough to evict safely. Exceed the soft cap (see comment
-                // in write_event) to avoid open/close thrash and data loss.
-                self.open_files_soft_limit_exceeded_total =
-                    self.open_files_soft_limit_exceeded_total.saturating_add(1);
-                if self.open_files_soft_limit_exceeded_total == 1
-                    || (self.open_files_soft_limit_exceeded_total % 1000 == 0)
-                {
-                    warn!(
-                        "parquet open_files exceeded soft cap (no idle writers to evict): open_files={} max_open_files={} min_evict_age_secs={}",
-                        self.writers.len(),
-                        self.max_open_files,
-                        min_evict_age.as_secs()
-                    );
+            let key = match oldest_key {
+                Some(k) => k,
+                None => {
+                    let k = match fallback_key {
+                        Some(k) => k,
+                        None => return Ok(()),
+                    };
+                    self.open_files_soft_limit_exceeded_total =
+                        self.open_files_soft_limit_exceeded_total.saturating_add(1);
+                    if self.open_files_soft_limit_exceeded_total == 1
+                        || (self.open_files_soft_limit_exceeded_total % 1000 == 0)
+                    {
+                        warn!(
+                            "parquet open_files eviction forced: open_files={} max_open_files={} min_evict_age_secs={}",
+                            self.writers.len(),
+                            self.max_open_files,
+                            min_evict_age.as_secs()
+                        );
+                    }
+                    k
                 }
-                return Ok(());
             };
             if let Some(entry) = self.writers.remove(&key) {
                 let age = now
