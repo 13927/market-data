@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 WEBHOOK="${FEISHU_WEBHOOK:-}"
-MSG="${1:-项目正常运行}"
+DEFAULT_MSG="项目正常运行"
+MSG="${1:-$DEFAULT_MSG}"
 if [[ -z "${WEBHOOK}" ]]; then
   echo "missing FEISHU_WEBHOOK" >&2
   exit 2
@@ -59,6 +60,20 @@ disk_used=""
 disk_avail=""
 disk_usep=""
 read -r _ disk_size disk_used disk_avail disk_usep _ < <(df -h /mnt/market_data 2>/dev/null | awk 'NR==2{print $1" "$2" "$3" "$4" "$5" "$6}')
+
+if [[ "$MSG" == "$DEFAULT_MSG" ]]; then
+  case "$active" in
+    active)
+      MSG="项目正常运行"
+      ;;
+    unknown)
+      MSG="项目已停止"
+      ;;
+    *)
+      MSG="项目未正常运行"
+      ;;
+  esac
+fi
 
 # Prepare variables for JSON
 pid="${main_pid:-unknown}"

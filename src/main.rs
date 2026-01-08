@@ -180,18 +180,70 @@ fn next_backoff_secs(prev: u64, success: bool) -> u64 {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        // Logs are typically redirected to a file via the daemon script; keep them plain.
-        .with_ansi(false)
-        .init();
+    let args: Vec<String> = std::env::args().collect();
+    let backfill_csv = args.iter().any(|a| a == "--backfill-csv");
+    let mut single_csv: Option<String> = None;
+    let mut i = 1;
+    while i + 1 < args.len() {
+        if args[i] == "--convert-csv" {
+            single_csv = Some(args[i + 1].clone());
+            break;
+        }
+        i += 1;
+    }
+
+    if backfill_csv || single_csv.is_some() {
+        use std::fs::OpenOptions;
+        use std::sync::Arc;
+
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("csv_error_report.log")
+            .context("open csv_error_report.log")?;
+        let writer = Arc::new(file);
+
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+            )
+            .with_ansi(false)
+            .init();
+    }
 
     let cfg = config::Config::from_path("config.toml")?;
     log_config_summary(&cfg);
     validate_config_for_scale(&cfg)?;
+
+    if let Some(path_str) = single_csv {
+        let path = std::path::Path::new(&path_str);
+        let start = std::time::Instant::now();
+        writer::csv::convert_csv_to_parquet(path)?;
+        let dur = start.elapsed();
+        println!(
+            "Converted single CSV {:?} in {:.3}s",
+            path,
+            dur.as_secs_f64()
+        );
+        return Ok(());
+    }
+
+    if backfill_csv {
+        let dir = std::path::Path::new(&cfg.output.dir);
+        let bucket_minutes = cfg.output.bucket_minutes;
+        writer::csv::scan_and_convert_legacy_files(dir, bucket_minutes);
+        return Ok(());
+    }
 
     let (event_tx, event_rx) = if cfg.output.queue_capacity == 0 {
         unbounded::<schema::event::MarketEvent>()
@@ -702,9 +754,12 @@ async fn main() -> anyhow::Result<()> {
 
     wait_for_shutdown().await?;
     info!("shutdown: stopping tasks");
-    for t in tasks {
+    for t in &tasks {
         t.abort();
     }
+    // Wait for all tasks to finish (releasing tx)
+    futures_util::future::join_all(tasks).await;
+
     drop(event_tx);
     let _ = writer_handle.join();
 
