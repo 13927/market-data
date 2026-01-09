@@ -68,7 +68,7 @@ fn merge_all_in_dir(root: &Path) -> anyhow::Result<()> {
                 .unwrap_or("");
             if stem == base_stem {
                 has_base = true;
-            } else if is_part_stem(base_stem, stem) {
+            } else if is_part_stem(&base_stem, stem) {
                 has_part = true;
             }
         }

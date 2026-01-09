@@ -277,20 +277,13 @@ async fn run_kucoin_futures_ws_once(
     .context("kucoin_futures connect")?;
     let (mut write, mut read) = ws.split();
 
-    // subscribe
-    // KuCoin supports batch subscription (max 100 topics per request).
-    for (batch_idx, chunk) in topics.chunks(100).enumerate() {
-        let id = format!("sub-{batch_idx}-{connect_id}");
-        let topic_str = chunk
-            .iter()
-            .map(|(t, _, _)| t.as_str())
-            .collect::<Vec<&str>>()
-            .join(",");
-
+    // subscribe: send one subscribe frame per topic, mirroring the spot implementation.
+    for (i, (topic, _stream, _symbol)) in topics.iter().enumerate() {
+        let id = format!("sub-{i}-{connect_id}");
         let msg = serde_json::json!({
             "id": id,
             "type": "subscribe",
-            "topic": topic_str,
+            "topic": topic,
             "privateChannel": false,
             "response": true
         });
