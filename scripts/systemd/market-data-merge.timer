@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Market Data Parquet Merge Every Hour
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Unit=market-data-merge.service
+
+[Install]
+WantedBy=timers.target
+
