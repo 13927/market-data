@@ -895,19 +895,27 @@ fn handle_gate_text(
             get_u64(result, &["lastUpdateId", "u", "U", "id", "current"])
         };
 
-        // Bids: highest price first
         let mut bids_iter = book.bids.iter().rev();
-        if let Some((&p, &q)) = bids_iter.next() { ev.bid_px = Some(f64::from_bits(p)); ev.bid_qty = Some(q); }
-        if let Some((&p, &q)) = bids_iter.next() { ev.bid1_px = Some(f64::from_bits(p)); ev.bid1_qty = Some(q); }
+        if let Some((&p, &q)) = bids_iter.next() {
+            let px = f64::from_bits(p);
+            ev.bid_px = Some(px);
+            ev.bid_qty = Some(q);
+            ev.bid1_px = Some(px);
+            ev.bid1_qty = Some(q);
+        }
         if let Some((&p, &q)) = bids_iter.next() { ev.bid2_px = Some(f64::from_bits(p)); ev.bid2_qty = Some(q); }
         if let Some((&p, &q)) = bids_iter.next() { ev.bid3_px = Some(f64::from_bits(p)); ev.bid3_qty = Some(q); }
         if let Some((&p, &q)) = bids_iter.next() { ev.bid4_px = Some(f64::from_bits(p)); ev.bid4_qty = Some(q); }
         if let Some((&p, &q)) = bids_iter.next() { ev.bid5_px = Some(f64::from_bits(p)); ev.bid5_qty = Some(q); }
 
-        // Asks: lowest price first
         let mut asks_iter = book.asks.iter();
-        if let Some((&p, &q)) = asks_iter.next() { ev.ask_px = Some(f64::from_bits(p)); ev.ask_qty = Some(q); }
-        if let Some((&p, &q)) = asks_iter.next() { ev.ask1_px = Some(f64::from_bits(p)); ev.ask1_qty = Some(q); }
+        if let Some((&p, &q)) = asks_iter.next() {
+            let px = f64::from_bits(p);
+            ev.ask_px = Some(px);
+            ev.ask_qty = Some(q);
+            ev.ask1_px = Some(px);
+            ev.ask1_qty = Some(q);
+        }
         if let Some((&p, &q)) = asks_iter.next() { ev.ask2_px = Some(f64::from_bits(p)); ev.ask2_qty = Some(q); }
         if let Some((&p, &q)) = asks_iter.next() { ev.ask3_px = Some(f64::from_bits(p)); ev.ask3_qty = Some(q); }
         if let Some((&p, &q)) = asks_iter.next() { ev.ask4_px = Some(f64::from_bits(p)); ev.ask4_qty = Some(q); }
@@ -980,9 +988,31 @@ fn emit_gate_trade(
     let event_ts = parse_ts_ms(envelope.get("time"));
     ev.trade_time = txn_ts;
     ev.event_time = event_ts.or(txn_ts);
-    let side = get_str(item, &["side", "S"]).unwrap_or("");
+    let mut side = get_str(item, &["side", "S"])
+        .map(|s| s.to_string())
+        .unwrap_or_default();
     let px = get_f64(item, &["price", "p"]);
-    let qty = get_f64(item, &["amount", "q", "size"]);
+    let mut qty = get_f64(item, &["amount", "q", "size"]);
+    if is_futures && side.is_empty() {
+        if let Some(v) = item.get("size") {
+            let parsed = if let Some(x) = v.as_f64() {
+                Some(x)
+            } else {
+                v.as_str().and_then(|s| s.parse::<f64>().ok())
+            };
+            if let Some(raw) = parsed {
+                let abs = raw.abs();
+                if abs > 0.0 {
+                    qty = Some(abs);
+                    if raw > 0.0 {
+                        side = "buy".to_string();
+                    } else if raw < 0.0 {
+                        side = "sell".to_string();
+                    }
+                }
+            }
+        }
+    }
     if side.eq_ignore_ascii_case("sell") {
         ev.bid_px = px;
         ev.bid_qty = qty;
@@ -1172,6 +1202,38 @@ mod tests {
         assert_eq!(ev.trade_time, Some(1700000000300));
         assert_eq!(ev.bid_px, Some(100.2));
         assert_eq!(ev.bid_qty, Some(2.0));
+    }
+
+    #[test]
+    fn parse_futures_trade_from_size_sign_ok() {
+        let symbols = vec![("BTC_USDT".to_string(), "BTCUSDT".to_string())];
+        let text = r#"{
+            "time":1700000000500,
+            "channel":"futures.trades",
+            "event":"update",
+            "result":[
+                {
+                    "contract":"BTC_USDT",
+                    "create_time":1700000000,
+                    "create_time_ms":1700000000400,
+                    "id":640336948,
+                    "price":"88800.8",
+                    "size":"10"
+                }
+            ]
+        }"#;
+        let (tx, rx) = unbounded();
+        let mut books = HashMap::new();
+        handle_gate_text("gate", true, text, &symbols, &tx, &mut books).unwrap();
+        let ev = rx.recv().unwrap();
+        assert_eq!(ev.exchange, "gate");
+        assert!(matches!(ev.stream, Stream::FutureTrade));
+        assert_eq!(ev.symbol, "BTCUSDT");
+        assert_eq!(ev.update_id, Some(640336948));
+        assert_eq!(ev.event_time, Some(1700000000500));
+        assert_eq!(ev.trade_time, Some(1700000000400));
+        assert_eq!(ev.ask_px, Some(88800.8));
+        assert_eq!(ev.ask_qty, Some(10.0));
     }
 
     #[test]
