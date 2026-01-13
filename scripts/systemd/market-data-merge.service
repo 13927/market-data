@@ -6,11 +6,10 @@ After=network.target
 Type=oneshot
 WorkingDirectory=/mnt/market_data
 Environment=RUST_LOG=info
-ExecStart=/usr/bin/env bash -c '/usr/bin/env cargo run --release --bin parquet_merge -- data'
+ExecStart=/mnt/market_data/target/release/parquet_merge data
 TimeoutStartSec=3600
 Nice=10
 IOSchedulingClass=idle
 
 [Install]
 WantedBy=multi-user.target
-
