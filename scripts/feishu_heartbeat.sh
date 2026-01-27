@@ -61,6 +61,41 @@ disk_avail=""
 disk_usep=""
 read -r _ disk_size disk_used disk_avail disk_usep _ < <(df -h /mnt/market_data 2>/dev/null | awk 'NR==2{print $1" "$2" "$3" "$4" "$5" "$6}')
 
+retention_hours=""
+disk_soft_limit_gb=""
+if [[ -r "/mnt/market_data/config.toml" ]]; then
+  retention_hours="$(awk -F'=' '/^[[:space:]]*retention_hours[[:space:]]*=/ {gsub(/[ #]/,"",$2); print $2; exit}' /mnt/market_data/config.toml || true)"
+  disk_soft_limit_gb="$(awk -F'=' '/^[[:space:]]*disk_soft_limit_gb[[:space:]]*=/ {gsub(/[ #]/,"",$2); print $2; exit}' /mnt/market_data/config.toml || true)"
+fi
+
+data_window="unknown"
+if [[ -d "/mnt/market_data/data" ]]; then
+  mapfile -t ts_list < <(
+    find "/mnt/market_data/data" -type f \( -name '*.parquet' -o -name '*.jsonl' -o -name '*.csv' \) -printf '%f\n' 2>/dev/null |
+      grep -oE '[0-9]{12}' | sort
+  )
+  count=${#ts_list[@]}
+  if (( count > 0 )); then
+    data_start_raw="${ts_list[0]}"
+    data_end_raw="${ts_list[count-1]}"
+  fi
+  if [[ -n "${data_start_raw:-}" && -n "${data_end_raw:-}" ]]; then
+    start_fmt="$(date -u -d "${data_start_raw:0:8} ${data_start_raw:8:2}:${data_start_raw:10:2}" '+%Y-%m-%d %H:%M' 2>/dev/null || true)"
+    end_fmt="$(date -u -d "${data_end_raw:0:8} ${data_end_raw:8:2}:${data_end_raw:10:2}" '+%Y-%m-%d %H:%M' 2>/dev/null || true)"
+    if [[ -n "${start_fmt}" && -n "${end_fmt}" ]]; then
+      data_window="${start_fmt} ~ ${end_fmt}"
+    fi
+  fi
+fi
+if [[ "${data_window}" == "unknown" && -n "${retention_hours}" ]]; then
+  data_window="≥${retention_hours}h"
+fi
+
+disk_limit_desc="no soft limit"
+if [[ -n "${disk_soft_limit_gb}" && "${disk_soft_limit_gb}" != "0" ]]; then
+  disk_limit_desc="${disk_soft_limit_gb}GiB soft limit"
+fi
+
 if [[ "$MSG" == "$DEFAULT_MSG" ]]; then
   case "$active" in
     active)
@@ -85,6 +120,10 @@ fd="${fd_cnt:-?}"
 load="${loadavg:-?}"
 mem_stats="${mem_used:-?}/${mem_total:-?}MB (Avail: ${mem_avail:-?}MB)"
 disk_stats="${disk_used:-?}/${disk_size:-?} (${disk_usep:-?}) (Avail: ${disk_avail:-?})"
+window_stats="${data_window}"
+if [[ -n "${disk_limit_desc}" ]]; then
+  window_stats="${window_stats} (${disk_limit_desc})"
+fi
 
 # Determine color based on service status or message content
 HEADER_COLOR="blue"
@@ -108,6 +147,7 @@ jq -n \
   --arg load "$load" \
   --arg mem_stats "$mem_stats" \
   --arg disk_stats "$disk_stats" \
+  --arg window_stats "$window_stats" \
   --arg color "$HEADER_COLOR" \
   '{
     msg_type: "interactive",
@@ -143,7 +183,7 @@ jq -n \
           tag: "div",
           text: {
              tag: "lark_md",
-             content: ("**System Mem:** " + $mem_stats + "\n**Disk:** " + $disk_stats)
+             content: ("**System Mem:** " + $mem_stats + "\n**Disk:** " + $disk_stats + "\n**Data Window (UTC):** " + $window_stats)
           }
         }
       ]
