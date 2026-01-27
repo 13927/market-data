@@ -625,6 +625,7 @@ async fn main() -> anyhow::Result<()> {
     let bucket_minutes = cfg.output.bucket_minutes;
     let retention_hours = cfg.output.retention_hours;
     let cleanup_interval_secs = cfg.output.cleanup_interval_secs;
+    let disk_soft_limit_gb = cfg.output.disk_soft_limit_gb;
     let format = cfg.output.format.clone();
     let parquet_batch_size = cfg.output.parquet_batch_size;
     let parquet_record_batch_size = cfg.output.parquet_record_batch_size;
@@ -632,16 +633,19 @@ async fn main() -> anyhow::Result<()> {
     let parquet_idle_close_secs = cfg.output.parquet_idle_close_secs;
     let parquet_zstd_level = cfg.output.parquet_zstd_level;
     {
-        let bucket_ms = bucket_minutes.max(1) * 60_000;
-        let cutoff_ms = chrono::Utc::now().timestamp_millis()
-            - retention_hours * 3_600_000
-            - bucket_ms;
-        match writer::rollover::delete_older_than(std::path::Path::new(&output_dir), cutoff_ms) {
+        match writer::rollover::cleanup_with_disk_limit(
+            std::path::Path::new(&output_dir),
+            bucket_minutes,
+            retention_hours,
+            disk_soft_limit_gb,
+        ) {
             Ok(deleted) => {
-                info!(
-                    "startup cleanup: dir={} deleted_files={} cutoff_ms={}",
-                    output_dir, deleted, cutoff_ms
-                )
+                if deleted > 0 {
+                    info!(
+                        "startup cleanup: dir={} deleted_files={}",
+                        output_dir, deleted
+                    );
+                }
             }
             Err(err) => {
                 warn!("startup cleanup failed: {err:#}");
@@ -660,6 +664,7 @@ async fn main() -> anyhow::Result<()> {
                 parquet_zstd_level,
                 retention_hours,
                 cleanup_interval_secs,
+                disk_soft_limit_gb,
             )
             .expect("init parquet writer");
             let tick = crossbeam_channel::tick(std::time::Duration::from_secs(5));
@@ -692,6 +697,7 @@ async fn main() -> anyhow::Result<()> {
                 bucket_minutes,
                 retention_hours,
                 cleanup_interval_secs,
+                disk_soft_limit_gb,
             )
             .expect("init jsonl writer");
             let tick = crossbeam_channel::tick(std::time::Duration::from_secs(5));
@@ -724,6 +730,7 @@ async fn main() -> anyhow::Result<()> {
                 bucket_minutes,
                 retention_hours,
                 cleanup_interval_secs,
+                disk_soft_limit_gb,
             )
             .expect("init csv writer");
             let tick = crossbeam_channel::tick(std::time::Duration::from_secs(5));

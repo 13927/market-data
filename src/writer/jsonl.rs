@@ -26,6 +26,7 @@ pub struct JsonlFileWriter {
     dir: PathBuf,
     bucket_minutes: i64,
     retention_hours: i64,
+    disk_soft_limit_gb: u64,
     cleanup_interval: Duration,
     last_cleanup: Instant,
     last_queue_len: usize,
@@ -42,6 +43,7 @@ impl JsonlFileWriter {
         bucket_minutes: i64,
         retention_hours: i64,
         cleanup_interval_secs: u64,
+        disk_soft_limit_gb: u64,
     ) -> anyhow::Result<Self> {
         let bucket_minutes = if bucket_minutes <= 0 {
             60
@@ -59,6 +61,7 @@ impl JsonlFileWriter {
             dir,
             bucket_minutes,
             retention_hours,
+            disk_soft_limit_gb,
             cleanup_interval: Duration::from_secs(cleanup_interval_secs.max(10)),
             last_cleanup: Instant::now(),
             last_queue_len: 0,
@@ -155,12 +158,12 @@ impl JsonlFileWriter {
             return Ok(());
         }
         self.last_cleanup = Instant::now();
-        // File names encode the bucket *start* time; keep a full bucket overlap so we don't drop
-        // data that is still within the retention window.
-        let bucket_ms = self.bucket_minutes.max(1) * 60_000;
-        let cutoff_ms =
-            chrono::Utc::now().timestamp_millis() - self.retention_hours * 3_600_000 - bucket_ms;
-        let _ = super::rollover::delete_older_than(&self.dir, cutoff_ms)?;
+        let _ = super::rollover::cleanup_with_disk_limit(
+            &self.dir,
+            self.bucket_minutes,
+            self.retention_hours,
+            self.disk_soft_limit_gb,
+        )?;
         Ok(())
     }
 

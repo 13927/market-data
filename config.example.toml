@@ -68,6 +68,7 @@ format = "parquet" # parquet | jsonl | csv
 bucket_minutes = 60 # 1 hour per file
 retention_hours = 24
 cleanup_interval_secs = 300
+disk_soft_limit_gb = 0
 queue_capacity = 200000
 # Parquet row-group max size (default).
 parquet_batch_size = 50000

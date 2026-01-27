@@ -53,6 +53,7 @@ pub struct ParquetFileWriter {
     dir: PathBuf,
     bucket_minutes: i64,
     retention_hours: i64,
+    disk_soft_limit_gb: u64,
     cleanup_interval: Duration,
     last_cleanup: Instant,
     report_interval: Duration,
@@ -87,6 +88,7 @@ impl ParquetFileWriter {
         zstd_level: i32,
         retention_hours: i64,
         cleanup_interval_secs: u64,
+        disk_soft_limit_gb: u64,
     ) -> anyhow::Result<Self> {
         let bucket_minutes = if bucket_minutes <= 0 {
             60
@@ -131,6 +133,7 @@ impl ParquetFileWriter {
             dir,
             bucket_minutes,
             retention_hours,
+            disk_soft_limit_gb,
             cleanup_interval: Duration::from_secs(cleanup_interval_secs.max(10)),
             last_cleanup: Instant::now(),
             report_interval: Duration::from_secs(30),
@@ -512,13 +515,12 @@ impl ParquetFileWriter {
             return Ok(());
         }
         self.last_cleanup = Instant::now();
-        // Files are bucketed by `bucket_minutes` and file names encode the bucket *start* time.
-        // To avoid deleting a bucket that still contains data within the retention window, we keep
-        // at least one full bucket overlap.
-        let bucket_ms = self.bucket_minutes.max(1) * 60_000;
-        let cutoff_ms =
-            chrono::Utc::now().timestamp_millis() - self.retention_hours * 3_600_000 - bucket_ms;
-        let deleted = super::rollover::delete_older_than(&self.dir, cutoff_ms)?;
+        let deleted = super::rollover::cleanup_with_disk_limit(
+            &self.dir,
+            self.bucket_minutes,
+            self.retention_hours,
+            self.disk_soft_limit_gb,
+        )?;
         if deleted > 0 {
             info!("retention cleanup: deleted_files={deleted}");
             // best-effort: force close any writers for buckets well before cutoff

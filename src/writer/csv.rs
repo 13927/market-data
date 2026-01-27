@@ -31,6 +31,7 @@ pub struct CsvFileWriter {
     dir: PathBuf,
     bucket_minutes: i64,
     retention_hours: i64,
+    disk_soft_limit_gb: u64,
     cleanup_interval: Duration,
     last_cleanup: Instant,
 
@@ -52,6 +53,7 @@ impl CsvFileWriter {
         bucket_minutes: i64,
         retention_hours: i64,
         cleanup_interval_secs: u64,
+        disk_soft_limit_gb: u64,
     ) -> anyhow::Result<Self> {
         let (tx, rx) = unbounded::<PathBuf>();
 
@@ -78,6 +80,7 @@ impl CsvFileWriter {
             dir: dir.as_ref().to_path_buf(),
             bucket_minutes,
             retention_hours,
+            disk_soft_limit_gb,
             cleanup_interval: Duration::from_secs(cleanup_interval_secs),
             last_cleanup: Instant::now(),
             last_queue_len: 0,
@@ -222,10 +225,12 @@ impl CsvFileWriter {
             return Ok(());
         }
         self.last_cleanup = Instant::now();
-        let bucket_ms = self.bucket_minutes.max(1) * 60_000;
-        let cutoff_ms =
-            chrono::Utc::now().timestamp_millis() - self.retention_hours * 3_600_000 - bucket_ms;
-        let _ = super::rollover::delete_older_than(&self.dir, cutoff_ms)?;
+        let _ = super::rollover::cleanup_with_disk_limit(
+            &self.dir,
+            self.bucket_minutes,
+            self.retention_hours,
+            self.disk_soft_limit_gb,
+        )?;
         Ok(())
     }
 }

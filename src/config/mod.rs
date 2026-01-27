@@ -399,6 +399,9 @@ pub struct OutputConfig {
     #[serde(default = "default_output_cleanup_interval_secs")]
     pub cleanup_interval_secs: u64,
 
+    #[serde(default = "default_output_disk_soft_limit_gb")]
+    pub disk_soft_limit_gb: u64,
+
     // Crossbeam channel capacity between websocket tasks and the writer thread.
     // 0 means unbounded (not recommended for large symbol counts).
     #[serde(default = "default_output_queue_capacity")]
@@ -437,6 +440,7 @@ impl Default for OutputConfig {
             bucket_minutes: default_output_bucket_minutes(),
             retention_hours: default_output_retention_hours(),
             cleanup_interval_secs: default_output_cleanup_interval_secs(),
+            disk_soft_limit_gb: default_output_disk_soft_limit_gb(),
             queue_capacity: default_output_queue_capacity(),
             parquet_batch_size: default_output_parquet_batch_size(),
             parquet_record_batch_size: default_output_parquet_record_batch_size(),
@@ -473,6 +477,10 @@ fn default_output_retention_hours() -> i64 {
 
 fn default_output_cleanup_interval_secs() -> u64 {
     300
+}
+
+fn default_output_disk_soft_limit_gb() -> u64 {
+    0
 }
 
 fn default_output_queue_capacity() -> usize {
