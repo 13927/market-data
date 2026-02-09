@@ -514,7 +514,12 @@ impl ParquetFileWriter {
         if self.last_cleanup.elapsed() < self.cleanup_interval {
             return Ok(());
         }
+        
         self.last_cleanup = Instant::now();
+        // best-effort: force close any writers for buckets well before cutoff
+        let current_bucket = bucket_id(time_now_ms(), self.bucket_minutes);
+        let _ = self.close_stale(current_bucket);
+
         let deleted = super::rollover::cleanup_with_disk_limit(
             &self.dir,
             self.bucket_minutes,
@@ -523,9 +528,6 @@ impl ParquetFileWriter {
         )?;
         if deleted > 0 {
             info!("retention cleanup: deleted_files={deleted}");
-            // best-effort: force close any writers for buckets well before cutoff
-            let current_bucket = bucket_id(time_now_ms(), self.bucket_minutes);
-            let _ = self.close_stale(current_bucket);
         }
         Ok(())
     }
