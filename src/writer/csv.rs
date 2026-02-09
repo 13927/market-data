@@ -734,6 +734,7 @@ mod tests {
             1, // bucket_minutes = 1
             24,
             1,
+            0,
         )?;
 
         let now_ms = crate::writer::time_now_ms();
