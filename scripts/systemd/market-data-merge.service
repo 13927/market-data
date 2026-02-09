@@ -6,6 +6,9 @@ After=network.target
 Type=oneshot
 WorkingDirectory=/mnt/market_data
 Environment=RUST_LOG=info
+User=ec2-user
+Group=ec2-user
+ExecStartPre=/usr/bin/install -d -o ec2-user -g ec2-user -m 0755 /mnt/market_data/data
 ExecStart=/mnt/market_data/target/release/parquet_merge data
 TimeoutStartSec=3600
 Nice=10
